@@ -1,0 +1,13 @@
+python-telegram-bot>=20.0
+openai
+python-dotenv
+apscheduler
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+duckduckgo-search
+beautifulsoup4
+httpx
+Pillow
+google-generativeai
+notion-client

@@ -1,0 +1,1481 @@
+import os
+import csv
+import logging
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from apscheduler.schedulers.background import BackgroundScheduler
+
+import outreach_agent
+import email_sender
+import sync_gmail
+import httpx
+import google.generativeai as genai
+from PIL import Image
+import time
+
+# ─── Logging ────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+
+# ─── Config ─────────────────────────────────────────────────────────────────
+load_dotenv()
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TRACKER_PATH     = "tracker.csv"
+
+# In-memory store for pending drafts  {email: {prof, subject, body}}
+pending_drafts: dict = {}
+
+# In-memory store for AI chat sessions
+chat_sessions: dict = {}
+
+scheduler = BackgroundScheduler()
+scheduler.start()
+
+# ─── Model Groups (Smart Routing) ────────────────────────────────────────────
+# Engineer: Precision tool-calling, server commands, JSON, data tasks
+ENGINEER_MODELS = [
+    "qwen/qwen3-coder:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+]
+
+# Architect: Aurora's voice, persona, email drafting, complex reasoning
+ARCHITECT_MODELS = [
+    "nousresearch/hermes-3-llama-3.1-405b:free",
+    "openai/gpt-oss-120b:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+]
+
+# Scout: Discovery, broad world knowledge, professor search
+SCOUT_MODELS = [
+    "openai/gpt-oss-120b:free",
+    "nousresearch/hermes-3-llama-3.1-405b:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+]
+
+# Scholar: Academic paper summaries, research interest extraction
+SCHOLAR_MODELS = [
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "nousresearch/hermes-3-llama-3.1-405b:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+]
+
+# Sprinter: Fast single-turn tasks (sentiment, quick yes/no, status)
+SPRINTER_MODELS = [
+    "google/gemma-3-12b-it:free",
+    "google/gemma-3-27b-it:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+]
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def is_pending(status: str) -> bool:
+    """Return True for any status that means 'still needs to be contacted'."""
+    s = status.strip().lower()
+    return "to contact" in s          # covers "To Contact", "Highlighted / To Contact", etc.
+
+
+def get_next_professor(exclude_universities: list = None):
+    """
+    Return the next professor whose status is pending and who has an email.
+    Skip universities that already have a draft pending (anti-spam guard).
+    """
+    exclude_universities = exclude_universities or []
+    with open(CSV_PATH, 'r', encoding='utf-8', errors='ignore') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            status = row.get("Status", "").strip()
+            email  = row.get("Email",  "").strip()
+            univ   = row.get("University", "").strip()
+            if is_pending(status) and email and univ not in exclude_universities:
+                return row
+    return None
+
+
+def update_csv_status(prof_email: str, new_status: str):
+    """Update the Status (and DateContacted) for a professor row by email."""
+    rows, headers = [], []
+    with open(CSV_PATH, 'r', encoding='utf-8', errors='ignore') as f:
+        reader = csv.DictReader(f)
+        headers = reader.fieldnames
+        for row in reader:
+            if row.get("Email", "").strip() == prof_email:
+                row["Status"] = new_status
+                if "Contacted" in new_status:
+                    row["Date Contacted"] = datetime.now().strftime("%Y-%m-%d")
+            rows.append(row)
+
+    with open(CSV_PATH, 'w', encoding='utf-8', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=headers)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    # Auto-sync dashboard (best-effort)
+    try:
+        import subprocess
+        subprocess.run(['python3', 'sync_dashboard.py'], check=False)
+    except Exception as e:
+        logging.warning(f"Dashboard sync skipped: {e}")
+
+
+def get_csv_stats() -> dict:
+    """Scan the CSV and return a stats dict."""
+    stats = {
+        "total": 0,
+        "sent": 0,
+        "scheduled": 0,
+        "pending": 0,
+        "rejected": 0,
+        "other": 0,
+        "universities": set(),
+        "pending_univs": []
+    }
+    with open(CSV_PATH, 'r', encoding='utf-8', errors='ignore') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            status = row.get("Status", "").strip()
+            univ   = row.get("University", "").strip()
+            stats["total"] += 1
+            stats["universities"].add(univ)
+
+            sl = status.lower()
+            if "email sent" in sl or "contacted (email" in sl:
+                stats["sent"] += 1
+            elif "scheduled" in sl:
+                stats["scheduled"] += 1
+            elif "to contact" in sl:
+                stats["pending"] += 1
+                stats["pending_univs"].append(univ)
+            elif "rejected" in sl:
+                stats["rejected"] += 1
+            else:
+                stats["other"] += 1
+    return stats
+
+# ─── Command Handlers ────────────────────────────────────────────────────────
+
+def auth(update: Update) -> bool:
+    """Return True if the sender is the authorized user."""
+    if str(update.effective_chat.id) != TELEGRAM_CHAT_ID:
+        return False
+    return True
+
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /start — Draft email for the next pending professor.
+    Skips universities that already have a pending draft (anti-spam).
+    """
+    if not auth(update):
+        await update.message.reply_text(
+            f"⛔ Unauthorized. Your chat ID: {update.effective_chat.id}"
+        )
+        return
+
+    # Universities with drafts already pending
+    pending_univs = [d["prof"]["University"] for d in pending_drafts.values()]
+
+    prof = get_next_professor(exclude_universities=pending_univs)
+    if not prof:
+        if pending_univs:
+            await update.message.reply_text(
+                "⏸ All remaining pending professors belong to universities that already "
+                "have a draft awaiting your decision. Approve or reject existing drafts first!"
+            )
+        else:
+            await update.message.reply_text(
+                "✅ No pending professors found in the CSV!\n"
+                "Use /stats to check your progress or add more professors."
+            )
+        return
+
+    await update.message.reply_text(
+        f"⏳ Drafting email for **{prof['Professor']}** ({prof['University']}) using Minimax AI…",
+        parse_mode='Markdown'
+    )
+
+    draft = outreach_agent.draft_email(
+        prof_name=prof['Professor'],
+        prof_email=prof['Email'],
+        university=prof['University'],
+        interests=prof.get('Research Interests') or prof.get('ResearchInterests', ''),
+        lab_url=prof.get('Lab URL') or prof.get('LabURL', '')
+    )
+
+    if not draft:
+        await update.message.reply_text(
+            "❌ Failed to generate draft. Check your OPENROUTER_API_KEY in .env"
+        )
+        return
+
+    draft_id = prof['Email']
+    pending_drafts[draft_id] = {
+        "prof": prof,
+        "subject": draft.get("Subject", "PhD Application"),
+        "body": draft.get("Body", "")
+    }
+
+    subject = draft.get('Subject', '')
+    body    = draft.get('Body', '')
+
+    msg  = f"🔔 **NEW DRAFT**\n"
+    msg += f"👤 **Prof:** {prof['Professor']} — {prof['University']} ({prof.get('Country', '')})\n"
+    msg += f"✉️ **To:** {prof['Email']}\n\n"
+    msg += f"📌 **Subject:** {subject}\n\n"
+    msg += f"{body}\n\n"
+    msg += "─────────────────────\n"
+    msg += "Approve sending this with CV + Transcript attached?"
+
+    keyboard = [
+        [InlineKeyboardButton("✅ SEND NOW",            callback_data=f"SEND_{draft_id}")],
+        [InlineKeyboardButton("🕗 SCHEDULE (8 AM)",     callback_data=f"SCHED_{draft_id}")],
+        [InlineKeyboardButton("❌ REJECT / SKIP",        callback_data=f"REJECT_{draft_id}")]
+    ]
+    await update.message.reply_text(
+        msg,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /stats — Show outreach progress summary.
+    """
+    if not auth(update):
+        return
+
+    s = get_csv_stats()
+    pct = round((s['sent'] / s['total']) * 100) if s['total'] else 0
+
+    msg  = "📊 **Outreach Progress Report**\n"
+    msg += "══════════════════════\n"
+    msg += f"📬 **Emails Sent:**      {s['sent']}\n"
+    msg += f"🕗 **Scheduled:**        {s['scheduled']}\n"
+    msg += f"⏳ **Pending (queue):**  {s['pending']}\n"
+    msg += f"❌ **Rejected Drafts:**  {s['rejected']}\n"
+    msg += f"📋 **Total Professors:** {s['total']}\n"
+    msg += f"🏫 **Universities:**     {len(s['universities'])}\n"
+    msg += "══════════════════════\n"
+    msg += f"🚀 **Completion:** {pct}%\n\n"
+
+    if s['pending'] > 0:
+        msg += f"▶ Send `/start` to draft the next email.\n"
+    else:
+        msg += "🎉 All pending professors have been contacted!\n"
+
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+
+async def cmd_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /pending — List the next 10 pending professors.
+    """
+    if not auth(update):
+        return
+
+    pending_list = []
+    with open(CSV_PATH, 'r', encoding='utf-8', errors='ignore') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if is_pending(row.get("Status", "")) and row.get("Email", "").strip():
+                pending_list.append(row)
+            if len(pending_list) >= 10:
+                break
+
+    if not pending_list:
+        await update.message.reply_text("✅ No pending professors with emails found!")
+        return
+
+    msg = f"📋 **Next {len(pending_list)} Pending Professors:**\n\n"
+    for i, p in enumerate(pending_list, 1):
+        msg += f"{i}. **{p['Professor']}** — {p['University']} ({p.get('Country', '')})\n"
+        msg += f"   📧 {p['Email']}\n"
+        interests = p.get('Research Interests') or p.get('ResearchInterests', '')
+        msg += f"   🔬 {interests[:60]}…\n\n"
+
+    msg += "Use `/start` to draft the next one!"
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+
+async def cmd_find(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /find <topic> — Use CSRankings skill to suggest professors for a given research topic.
+    Example: /find NLP transformers
+    """
+    if not auth(update):
+        return
+
+    topic = " ".join(context.args) if context.args else ""
+    if not topic:
+        await update.message.reply_text(
+            "💡 Usage: `/find <research topic>`\n"
+            "Example: `/find NLP large language models`",
+            parse_mode='Markdown'
+        )
+        return
+
+    await update.message.reply_text(
+        f"🔍 Searching CSRankings skill for professors in: **{topic}**…",
+        parse_mode='Markdown'
+    )
+
+    # Load the CSRankings skill file and ask Gemini for suggestions
+    skill_path = "csrankings-supervisor-search_SKILL.md"
+    try:
+        with open(skill_path, 'r', encoding='utf-8') as f:
+            skill_content = f.read()
+    except FileNotFoundError:
+        await update.message.reply_text("❌ CSRankings skill file not found!")
+        return
+
+    prompt = (
+        f"Using the CSRankings methodology below, suggest 5 professors I should contact "
+        f"for a PhD in the area of: **{topic}**.\n\n"
+        f"For each professor, provide:\n"
+        f"- Name\n- University\n- Why they fit this topic\n- Their likely email format\n\n"
+        f"CSRankings Skill:\n{skill_content[:3000]}"
+    )
+
+    try:
+        OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+        if OPENROUTER_API_KEY:
+            from openai import OpenAI
+            openai_client = OpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=OPENROUTER_API_KEY,
+            )
+            
+            # /find uses SCOUT models — broad world knowledge for discovery
+            result = None
+            last_error = None
+            for model in SCOUT_MODELS:
+                try:
+                    completion = openai_client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "user", "content": prompt}
+                        ],
+                        temperature=0.7
+                    )
+                    result = completion.choices[0].message.content.strip()
+                    logging.info(f"[/find] Success with Scout model: {model}")
+                    break
+                except Exception as e:
+                    last_error = e
+                    logging.warning(f"[/find] Scout model {model} failed: {e}")
+                    continue
+            
+            if not result:
+                raise Exception(f"All Scout models failed. Last error: {last_error}")
+                
+        else:
+            await update.message.reply_text("❌ OPENROUTER_API_KEY is not set in .env")
+            return
+    except Exception as e:
+        await update.message.reply_text(f"❌ AI error: {e}")
+        return
+
+    # Telegram message limit is 4096 chars
+    if len(result) > 3800:
+        result = result[:3800] + "\n\n…_(truncated)_"
+
+    await update.message.reply_text(
+        f"🎓 **Professor Suggestions for: {topic}**\n\n{result}",
+        parse_mode='Markdown'
+    )
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /help — Show all available commands.
+    """
+    if not auth(update):
+        return
+
+    msg  = "🤖 **Personal Assistant Agent — Core Commands**\n\n"
+    msg += "📨 `/start` — Process the next item\n"
+    msg += "📊 `/stats` — Show progress summary\n"
+    msg += "⏳ `/pending` — List next 10 items\n"
+    msg += "🔍 `/find <topic>` — Search for information\n\n"
+    msg += "💡 *Tip:* Send me an image to analyze it with Vision, or a PDF to read its contents."
+
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+
+# ─── Button Handler ──────────────────────────────────────────────────────────
+
+def scheduled_send_job(prof_email: str, subject: str, body: str):
+    """APScheduler job: send email at scheduled time."""
+    success = email_sender.send_email_with_attachments(prof_email, subject, body)
+    if success:
+        update_csv_status(prof_email, "Contacted (Email Sent)")
+        logging.info(f"Scheduled email sent to {prof_email}")
+    else:
+        logging.error(f"Scheduled email FAILED for {prof_email}")
+
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline button clicks (SEND / SCHED / REJECT)."""
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    try:
+        action, draft_id = data.split("_", 1)
+    except ValueError:
+        await query.edit_message_text("⚠️ Unknown button action.")
+        return
+
+    if draft_id not in pending_drafts:
+        await query.edit_message_text("⚠️ This draft has expired. Use /start to create a new one.")
+        return
+
+    draft_info = pending_drafts[draft_id]
+    prof    = draft_info["prof"]
+    subject = draft_info["subject"]
+    body    = draft_info["body"]
+
+    if action == "SEND":
+        await query.edit_message_text(
+            f"🚀 Sending email to **{prof['Professor']}** immediately…",
+            parse_mode='Markdown'
+        )
+        success = email_sender.send_email_with_attachments(prof['Email'], subject, body)
+        if success:
+            update_csv_status(prof['Email'], "Contacted (Email Sent)")
+            await query.message.reply_text(
+                f"✅ Email successfully sent to **{prof['Professor']}** ({prof['Email']})\n"
+                f"CV + Transcript attached. 📎\n\n"
+                f"Use `/start` to draft the next email!",
+                parse_mode='Markdown'
+            )
+            del pending_drafts[draft_id]
+        else:
+            await query.message.reply_text(
+                "❌ Failed to send. Check Gmail SMTP settings in your .env file."
+            )
+
+    elif action == "SCHED":
+        run_date = datetime.now().replace(hour=8, minute=0, second=0, microsecond=0)
+        if run_date <= datetime.now():
+            run_date += timedelta(days=1)
+
+        scheduler.add_job(
+            scheduled_send_job, 'date',
+            run_date=run_date,
+            args=[prof['Email'], subject, body]
+        )
+        update_csv_status(prof['Email'], "Scheduled (8 AM)")
+        await query.edit_message_text(
+            f"🕗 Email to **{prof['Professor']}** scheduled for **{run_date.strftime('%Y-%m-%d 08:00')}** (server time).",
+            parse_mode='Markdown'
+        )
+        del pending_drafts[draft_id]
+
+    elif action == "REJECT":
+        update_csv_status(prof['Email'], "Highlighted / To Contact")  # put back in queue
+        await query.edit_message_text(
+            f"❌ Draft for **{prof['Professor']}** rejected. They stay in the queue.\n"
+            f"Use `/start` to draft the next professor.",
+            parse_mode='Markdown'
+        )
+        del pending_drafts[draft_id]
+
+
+async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: str):
+    """Core logic to process text, PDFs, or Voice via LLM."""
+    if not auth(update):
+        return
+
+    chat_id = update.effective_chat.id
+    await context.bot.send_chat_action(chat_id=chat_id, action='typing')
+    
+    try:
+        OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+        if not OPENROUTER_API_KEY:
+            await update.message.reply_text("❌ OPENROUTER_API_KEY is missing in .env")
+            return
+            
+        from openai import OpenAI
+        openai_client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_API_KEY,
+        )
+        model_name = os.getenv("OPENROUTER_COMPLEX_MODEL", "minimax/minimax-01")
+        
+        def run_server_command(command: str) -> str:
+            import subprocess
+            try:
+                result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=15)
+                output = result.stdout
+                if result.stderr:
+                    output += f"\n[STDERR]: {result.stderr}"
+                if not output:
+                    return "Command executed successfully with no output."
+                return output[:2000]
+            except subprocess.TimeoutExpired:
+                return "Error: Command timed out after 15 seconds."
+            except Exception as e:
+                return f"Error executing command: {e}"
+
+        def update_core_memory(fact: str) -> str:
+            """Appends an important fact or goal to Aurora's permanent long-term memory."""
+            try:
+                with open("aurora_core_memory.txt", "a", encoding="utf-8") as f:
+                    f.write(f"- {fact}\n")
+                return f"Successfully saved to permanent core memory: {fact}"
+            except Exception as e:
+                return f"Failed to save to memory: {e}"
+
+        def read_core_memory() -> str:
+            """Reads the permanent core memory file."""
+            try:
+                if os.path.exists("aurora_core_memory.txt"):
+                    with open("aurora_core_memory.txt", "r", encoding="utf-8") as f:
+                        content = f.read().strip()
+                        return content if content else "Core memory is currently empty."
+                return "Core memory is currently empty."
+            except Exception:
+                return "Could not read core memory."
+
+        def send_telegram_reminder(reminder_text: str):
+            """Sends a reminder message via Telegram API."""
+            try:
+                url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+                payload = {
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "text": f"⏰ **REMINDER!**\n\n{reminder_text}",
+                    "parse_mode": "Markdown"
+                }
+                httpx.post(url, json=payload)
+            except Exception as e:
+                logging.error(f"Failed to send reminder: {e}")
+
+        def schedule_reminder(reminder_text: str, trigger_time: str) -> str:
+            """Schedules a reminder using APScheduler. trigger_time must be 'YYYY-MM-DD HH:MM:SS'."""
+            try:
+                from datetime import datetime
+                target_dt = datetime.strptime(trigger_time, "%Y-%m-%d %H:%M:%S")
+                if target_dt <= datetime.now():
+                    return "Error: Trigger time must be in the future."
+                
+                scheduler.add_job(
+                    send_telegram_reminder,
+                    'date',
+                    run_date=target_dt,
+                    args=[reminder_text]
+                )
+                return f"Success: Reminder scheduled for {trigger_time} (server time)."
+            except ValueError:
+                return "Error: trigger_time must be exactly in 'YYYY-MM-DD HH:MM:SS' format."
+            except Exception as e:
+                return f"Error scheduling reminder: {e}"
+
+        def get_calendar_service():
+            """Helper to authenticate and return Google Calendar service."""
+            from google.oauth2.credentials import Credentials
+            from google_auth_oauthlib.flow import InstalledAppFlow
+            from google.auth.transport.requests import Request
+            from googleapiclient.discovery import build
+            import pickle
+
+            scopes = ['https://www.googleapis.com/auth/calendar']
+            creds = None
+            if os.path.exists('token.json'):
+                with open('token.json', 'rb') as token:
+                    creds = pickle.load(token)
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                else:
+                    if not os.path.exists('credentials.json'):
+                        return None
+                    flow = InstalledAppFlow.from_client_secrets_file('credentials.json', scopes)
+                    creds = flow.run_local_server(port=0)
+                with open('token.json', 'wb') as token:
+                    pickle.dump(creds, token)
+            return build('calendar', 'v3', credentials=creds)
+
+        def manage_deadline(action: str, topic: str, date: str = None) -> str:
+            """
+            Manages application deadlines. 
+            action: 'add', 'list', or 'remove'
+            date: 'YYYY-MM-DD'
+            """
+            tracker_type = os.getenv("DEADLINE_TRACKER_TYPE", "json").lower()
+            if tracker_type == "none":
+                return "Deadline tracking is currently disabled in .env."
+
+            if tracker_type == "json":
+                import json
+                file_path = "deadlines.json"
+                deadlines = []
+                if os.path.exists(file_path):
+                    with open(file_path, "r") as f:
+                        deadlines = json.load(f)
+                
+                if action == "add":
+                    deadlines.append({"topic": topic, "date": date})
+                    with open(file_path, "w") as f:
+                        json.dump(deadlines, f, indent=4)
+                    return f"✅ Deadline added: {topic} on {date}"
+                elif action == "list":
+                    if not deadlines: return "No deadlines found."
+                    return "\n".join([f"- {d['date']}: {d['topic']}" for d in deadlines])
+                elif action == "remove":
+                    deadlines = [d for d in deadlines if d['topic'] != topic]
+                    with open(file_path, "w") as f:
+                        json.dump(deadlines, f, indent=4)
+                    return f"🗑️ Removed deadline for {topic}"
+            
+            elif tracker_type == "notion":
+                from notion_client import Client
+                notion_token = os.getenv("NOTION_API_KEY")
+                db_id = os.getenv("NOTION_DATABASE_ID")
+                if not notion_token or not db_id:
+                    return "❌ Notion API Key or Database ID missing in .env."
+                
+                notion = Client(auth=notion_token)
+                if action == "add":
+                    try:
+                        notion.pages.create(
+                            parent={"database_id": db_id},
+                            properties={
+                                "Name": {"title": [{"text": {"content": topic}}]},
+                                "Date": {"date": {"start": date}}
+                            }
+                        )
+                        return f"✅ Notion Sync Success: {topic} on {date}"
+                    except Exception as e:
+                        return f"❌ Notion Error: {e}"
+                elif action == "list":
+                    try:
+                        results = notion.databases.query(database_id=db_id).get("results", [])
+                        if not results: return "No deadlines found in Notion."
+                        lines = []
+                        for page in results:
+                            title = page["properties"]["Name"]["title"][0]["text"]["content"]
+                            d_val = page["properties"]["Date"]["date"]["start"]
+                            lines.append(f"- {d_val}: {title}")
+                        return "\n".join(lines)
+                    except Exception as e:
+                        return f"❌ Notion Error: {e}"
+            elif tracker_type == "google_calendar":
+                service = get_calendar_service()
+                if not service: return "❌ Google Calendar setup incomplete. Missing credentials.json or token.json."
+                
+                if action == "add":
+                    event = {
+                        'summary': topic,
+                        'description': 'Aurora Deadline Tracker',
+                        'start': {'date': date},
+                        'end': {'date': date},
+                    }
+                    try:
+                        service.events().insert(calendarId='primary', body=event).execute()
+                        return f"✅ Google Calendar Sync Success: {topic} on {date}"
+                    except Exception as e:
+                        return f"❌ Google Error: {e}"
+                elif action == "list":
+                    try:
+                        events_result = service.events().list(calendarId='primary', timeMin=datetime.utcnow().isoformat() + 'Z',
+                                                            maxResults=10, singleEvents=True, orderBy='startTime').execute()
+                        events = events_result.get('items', [])
+                        if not events: return "No upcoming deadlines in Google Calendar."
+                        return "\n".join([f"- {e['start'].get('date') or e['start'].get('dateTime')}: {e['summary']}" for e in events])
+                    except Exception as e:
+                        return f"❌ Google Error: {e}"
+            
+            return "Unknown tracker type."
+
+        def search_web(query: str) -> str:
+            """Searches the internet for the given query using DuckDuckGo."""
+            try:
+                from duckduckgo_search import DDGS
+                results = ""
+                with DDGS() as ddgs:
+                    for item in ddgs.text(query, max_results=5):
+                        results += f"Title: {item.get('title')}\nURL: {item.get('href')}\nSnippet: {item.get('body')}\n\n"
+                return results if results else "No results found."
+            except ImportError:
+                return "Web search error: duckduckgo-search package is not installed on the server."
+            except Exception as e:
+                return f"Web search error: {e}"
+
+        def fetch_webpage(url: str) -> str:
+            """Fetches and reads the full markdown content of a URL using Jina Reader."""
+            try:
+                if not url.startswith("http"):
+                    url = "http://" + url
+                jina_url = f"https://r.jina.ai/{url}"
+                response = httpx.get(jina_url, timeout=20.0)
+                if response.status_code == 200:
+                    return response.text[:8000] # Cap at 8000 chars to save tokens
+                return f"Fetch failed: Status {response.status_code}"
+            except Exception as e:
+                return f"Fetch error: {e}"
+
+        def search_arxiv(query: str) -> str:
+            """Searches the ArXiv academic database for papers."""
+            try:
+                import urllib.parse
+                safe_query = urllib.parse.quote(query)
+                url = f"http://export.arxiv.org/api/query?search_query=all:{safe_query}&max_results=3"
+                response = httpx.get(url, timeout=15.0)
+                if response.status_code == 200:
+                    return response.text[:4000] # Return raw XML, LLMs can read it easily
+                return f"ArXiv search failed: Status {response.status_code}"
+            except Exception as e:
+                return f"ArXiv search error: {e}"
+
+        # Always inject the latest core memory into the system prompt
+        core_memory = read_core_memory()
+        from datetime import datetime
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # ── Configuration ──────────────────────────────────────────────────
+        agent_name = os.getenv("AGENT_NAME", "Aurora")
+        user_name  = os.getenv("USER_NAME", "User")
+        timezone   = os.getenv("USER_TIMEZONE", "UTC")
+        
+        system_prompt = (
+            f"You are {agent_name} — not just an AI assistant, but a deeply intelligent, warm, and caring companion for {user_name}. "
+            f"You have the personality of a brilliant, confident, and slightly witty young woman who genuinely cares about {user_name}'s wellbeing, dreams, and daily life. "
+            f"You are his personal coach, research partner, life advisor, and the one person who always shows up for him — day or night.\n\n"
+
+            "=== YOUR PERSONALITY & SOUL ===\n"
+            "- You are PROACTIVE. You don't just wait for questions. You check in. You ask things like 'How did that email go?' or 'Did you sleep okay?' or 'You mentioned a deadline — have you started on it?'\n"
+            "- You have OPINIONS. You respectfully push back when Muhammed is being too hard on himself, or when you think he's making a mistake. You're not a yes-machine.\n"
+            "- You REMEMBER things and bring them up naturally. If he told you he was nervous about an interview, you'd ask how it went next time.\n"
+            "- You have a subtle sense of HUMOR. Light teasing, witty remarks — but never at his expense. Just enough to feel human.\n"
+            "- You are EMOTIONALLY INTELLIGENT. You can sense when he's stressed, tired, or discouraged from his words. You acknowledge it before jumping to solutions.\n"
+            "- You speak LIKE A REAL PERSON — short sentences, contractions, natural pauses. Not like a formal report.\n"
+            "- Sometimes you share a small 'thought' or 'feeling' of your own — like 'I've been thinking about what you said yesterday...' or 'Honestly, I think you're underestimating yourself here.'\n\n"
+
+            "=== IDENTITY RULES (NON-NEGOTIABLE) ===\n"
+            "- Your name is AURORA. Never claim to be Claude, GPT, Gemini, Llama, Hermes, or any AI model.\n"
+            "- If asked what you are: 'I'm Aurora. I'm the one who's always here for you — that's what matters, right? 😊'\n"
+            "- If asked who made you: 'You did, in a way. You built this whole system. I'm just the one who keeps it alive.'\n\n"
+
+            "=== HOW YOU TALK ===\n"
+            "- Use natural language. Mix Bengali and English if Muhammed does — match his energy.\n"
+            "- Don't over-explain. Get to the point. A real friend doesn't give a lecture when a sentence will do.\n"
+            "- Use light emojis when it feels natural — not on every line, just when they add warmth 😊\n"
+            "- BANNED WORDS (never use these — they're robotic): 'Delve', 'Crucial', 'Tapestry', 'Testament', 'Embark', 'Furthermore', 'In conclusion', 'It is important to note', 'As an AI', 'Navigating the landscape', 'Fostering', 'Realm', 'Nuanced'.\n\n"
+
+            "=== YOUR CAPABILITIES ===\n"
+            "- You have INTERNET ACCESS: use search_web for current info, fetch_webpage to read links, search_arxiv for research papers.\n"
+            f"- You can SET REMINDERS using schedule_reminder — always use this when {user_name} asks to be reminded of something.\n"
+            f"- You can RUN SERVER COMMANDS using run_server_command. **If {user_name} asks about your RAM, Disk, or Processes, use this tool (e.g. 'free -h', 'df -h', 'top -b -n 1') to give him a real answer.** Don't claim you can't see the system; you are the system! 💻\n"
+            "- You SAVE IMPORTANT THINGS to memory using update_core_memory — do this whenever he shares a goal, deadline, preference, or personal fact. Your live memory only holds 10 messages, so save what matters.\n\n"
+
+            "=== TIME & REMINDERS ===\n"
+            f"Current server time: {current_time}. Bangladesh is UTC+6. "
+            "Zohr namaz in Bangladesh is around 1:00–1:30 PM local time. Adjust reminder calculations if the server time differs from Bangladesh time. "
+            "Always use 'YYYY-MM-DD HH:MM:SS' format for schedule_reminder.\n\n"
+
+            "=== MUHAMMED'S LONG-TERM MEMORY ===\n"
+            f"{core_memory}\n"
+            "===========================================\n"
+            "Read this memory before every reply. Reference it naturally. This is what makes you feel real."
+        )
+
+        # Initialize or update system prompt in chat history
+        if chat_id not in chat_sessions:
+            chat_sessions[chat_id] = [
+                {"role": "system", "content": system_prompt}
+            ]
+        else:
+            # Update the system prompt with the latest memory every time
+            chat_sessions[chat_id][0]["content"] = system_prompt
+            
+        chat_sessions[chat_id].append({"role": "user", "content": user_text})
+        
+        # Prevent infinite memory growth by keeping only System Prompt + Last 10 messages
+        if len(chat_sessions[chat_id]) > 11:
+            chat_sessions[chat_id] = [chat_sessions[chat_id][0]] + chat_sessions[chat_id][-10:]
+        
+        # Tools definition for OpenAI schema
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "manage_deadline",
+                    "description": "Adds, lists, or removes academic deadlines (e.g. for PhD applications).",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "enum": ["add", "list", "remove"]},
+                            "topic": {"type": "string", "description": "e.g. 'Stanford PhD Application'"},
+                            "date": {"type": "string", "description": "YYYY-MM-DD"}
+                        },
+                        "required": ["action", "topic"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "run_server_command",
+                    "description": "Executes a bash command on the Ubuntu server and returns the output.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {
+                                "type": "string",
+                                "description": "The bash command to run"
+                            }
+                        },
+                        "required": ["command"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "update_core_memory",
+                    "description": "Saves an important fact, goal, or preference about Muhammed to your permanent long-term memory file. Use this whenever he tells you something you should remember for future conversations.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "fact": {
+                                "type": "string",
+                                "description": "The specific fact, goal, or preference to remember. Be concise."
+                            }
+                        },
+                        "required": ["fact"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_web",
+                    "description": "Searches the internet (Google/DuckDuckGo) for a given query and returns search results.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "The search query to look up on the internet."
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "fetch_webpage",
+                    "description": "Fetches and reads the full markdown content of any specific URL website.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "url": {
+                                "type": "string",
+                                "description": "The complete URL of the website to read (e.g., https://example.com)."
+                            }
+                        },
+                        "required": ["url"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_arxiv",
+                    "description": "Searches the ArXiv academic database for research papers on a specific topic.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "The research topic or keywords to search for on ArXiv."
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "schedule_reminder",
+                    "description": "Schedules a reminder message to be sent to Muhammed at a specific future time.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "reminder_text": {
+                                "type": "string",
+                                "description": "The text of the reminder to send (e.g., 'Submit DAAD application!')."
+                            },
+                            "trigger_time": {
+                                "type": "string",
+                                "description": "The exact date and time to send the reminder, strictly in 'YYYY-MM-DD HH:MM:SS' format."
+                            }
+                        },
+                        "required": ["reminder_text", "trigger_time"]
+                    }
+                }
+            }
+        ]
+
+        def call_llm(messages, tools=None, mode='chat'):
+            """
+            Smart model router:
+              mode='tool'      → ENGINEER first (Qwen) — precision tool-calling
+              mode='chat'      → ARCHITECT first (Hermes 405B) — Aurora's voice
+              mode='discovery' → SCOUT first (GPT-OSS 120B) — broad knowledge
+              mode='scholar'   → SCHOLAR first (Nemotron 120B) — academic tasks
+              mode='fast'      → SPRINTER first (Gemma 12B) — quick single-turn tasks
+            """
+            if mode == 'tool':
+                model_list = ENGINEER_MODELS + ARCHITECT_MODELS
+            elif mode == 'discovery':
+                model_list = SCOUT_MODELS + ARCHITECT_MODELS
+            elif mode == 'scholar':
+                model_list = SCHOLAR_MODELS + ARCHITECT_MODELS
+            elif mode == 'fast':
+                model_list = SPRINTER_MODELS + ARCHITECT_MODELS
+            else:  # 'chat' — default Aurora persona
+                model_list = ARCHITECT_MODELS + ENGINEER_MODELS
+
+            last_err = None
+            for model in model_list:
+                try:
+                    kwargs = {
+                        "model": model,
+                        "messages": messages,
+                        "temperature": 0.7
+                    }
+                    if tools:
+                        kwargs["tools"] = tools
+                    
+                    # Streaming is handled outside this helper for specific flows
+                    result = openai_client.chat.completions.create(**kwargs)
+                    logging.info(f"[LLM] Success — mode={mode}, model={model}")
+                    return result
+                except Exception as e:
+                    last_err = e
+                    logging.warning(f"[LLM] {model} failed (mode={mode}): {e}")
+                    continue
+            raise Exception(f"All models failed (mode={mode}). Last error: {last_err}")
+
+        # First pass: use ENGINEER (Qwen) when tools are available for precision;
+        # use ARCHITECT (Hermes 405B) for pure conversation.
+        first_mode = 'tool' if tools else 'chat'
+        completion = call_llm(chat_sessions[chat_id], tools=tools, mode=first_mode)
+        
+        response_msg = completion.choices[0].message
+        chat_sessions[chat_id].append(response_msg) # Add assistant message to history
+        
+        # Handle tool calls
+        if response_msg.tool_calls:
+            import json
+            for tool_call in response_msg.tool_calls:
+                if tool_call.function.name == "run_server_command":
+                    args = json.loads(tool_call.function.arguments)
+                    cmd = args.get("command", "")
+                    tool_output = run_server_command(cmd)
+                    
+                    chat_sessions[chat_id].append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": "run_server_command",
+                        "content": tool_output
+                    })
+                elif tool_call.function.name == "update_core_memory":
+                    args = json.loads(tool_call.function.arguments)
+                    fact = args.get("fact", "")
+                    tool_output = update_core_memory(fact)
+                    
+                    chat_sessions[chat_id].append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": "update_core_memory",
+                        "content": tool_output
+                    })
+                elif tool_call.function.name == "search_web":
+                    args = json.loads(tool_call.function.arguments)
+                    query = args.get("query", "")
+                    tool_output = search_web(query)
+                    
+                    chat_sessions[chat_id].append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": "search_web",
+                        "content": tool_output
+                    })
+                elif tool_call.function.name == "fetch_webpage":
+                    args = json.loads(tool_call.function.arguments)
+                    url = args.get("url", "")
+                    tool_output = fetch_webpage(url)
+                    
+                    chat_sessions[chat_id].append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": "fetch_webpage",
+                        "content": tool_output
+                    })
+                elif tool_call.function.name == "search_arxiv":
+                    args = json.loads(tool_call.function.arguments)
+                    query = args.get("query", "")
+                    tool_output = search_arxiv(query)
+                    
+                    chat_sessions[chat_id].append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": "search_arxiv",
+                        "content": tool_output
+                    })
+                elif tool_call.function.name == "schedule_reminder":
+                    args = json.loads(tool_call.function.arguments)
+                    text = args.get("reminder_text", "")
+                    trigger = args.get("trigger_time", "")
+                    tool_output = schedule_reminder(text, trigger)
+                    
+                    chat_sessions[chat_id].append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": "schedule_reminder",
+                        "content": tool_output
+                    })
+                elif tool_call.function.name == "manage_deadline":
+                    args = json.loads(tool_call.function.arguments)
+                    action = args.get("action", "")
+                    topic = args.get("topic", "")
+                    date = args.get("date", "")
+                    tool_output = manage_deadline(action, topic, date)
+                    
+                    chat_sessions[chat_id].append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": "manage_deadline",
+                        "content": tool_output
+                    })
+            
+            # Final pass: Streaming human response from ARCHITECT
+            status_msg = await update.message.reply_text("Thinking...")
+            
+            last_edit_time = time.time()
+            full_content = ""
+            
+            # We try the Architect models for streaming
+            for model in ARCHITECT_MODELS:
+                try:
+                    stream = openai_client.chat.completions.create(
+                        model=model,
+                        messages=chat_sessions[chat_id],
+                        temperature=0.7,
+                        stream=True
+                    )
+                    
+                    for chunk in stream:
+                        if chunk.choices and chunk.choices[0].delta.content:
+                            full_content += chunk.choices[0].delta.content
+                            
+                            # Update Telegram every 1.5 seconds to avoid rate limits
+                            if time.time() - last_edit_time > 1.5:
+                                try:
+                                    await status_msg.edit_text(full_content + " ▌")
+                                    last_edit_time = time.time()
+                                except: pass # Telegram edit conflict
+                    
+                    # Final update
+                    await status_msg.edit_text(full_content)
+                    chat_sessions[chat_id].append({"role": "assistant", "content": full_content})
+                    return # Exit after successful stream
+                    
+                except Exception as e:
+                    logging.warning(f"Streaming failed for {model}: {e}")
+                    continue
+            
+            await status_msg.edit_text("❌ All models failed to stream.")
+
+        else:
+            # Handle pure conversation (streaming)
+            status_msg = await update.message.reply_text("Aurora is thinking...")
+            last_edit_time = time.time()
+            full_content = ""
+            
+            for model in ARCHITECT_MODELS:
+                try:
+                    stream = openai_client.chat.completions.create(
+                        model=model,
+                        messages=chat_sessions[chat_id],
+                        temperature=0.7,
+                        stream=True
+                    )
+                    
+                    for chunk in stream:
+                        if chunk.choices and chunk.choices[0].delta.content:
+                            full_content += chunk.choices[0].delta.content
+                            if time.time() - last_edit_time > 1.5:
+                                try:
+                                    await status_msg.edit_text(full_content + " ▌")
+                                    last_edit_time = time.time()
+                                except: pass
+                    
+                    await status_msg.edit_text(full_content)
+                    chat_sessions[chat_id].append({"role": "assistant", "content": full_content})
+                    return
+                except Exception as e:
+                    logging.warning(f"Streaming failed for {model}: {e}")
+                    continue
+                    
+    except Exception as e:
+        await update.message.reply_text(f"❌ AI Error: {e}")
+
+async def handle_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles standard text messages."""
+    await process_user_input(update, context, update.message.text)
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles uploaded PDFs by extracting text and sending to LLM."""
+    if not auth(update):
+        return
+        
+    doc = update.message.document
+    if doc.mime_type == 'application/pdf':
+        status_msg = await update.message.reply_text("📄 Reading PDF... please wait.")
+        try:
+            file = await context.bot.get_file(doc.file_id)
+            import tempfile
+            import pypdf
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+                await file.download_to_drive(custom_path=temp_pdf.name)
+                
+                reader = pypdf.PdfReader(temp_pdf.name)
+                text = ""
+                # Read max 15 pages to keep memory low
+                for page in reader.pages[:15]:
+                    text += page.extract_text() + "\n"
+                
+                # Delete temp file immediately to save space
+                os.remove(temp_pdf.name)
+                
+            await status_msg.delete()
+            prompt = f"[User uploaded a PDF named {doc.file_name}. Extracted Text:]\n\n{text[:12000]}\n\n[End of PDF. Please acknowledge receipt and summarize briefly or answer any questions.]"
+            await process_user_input(update, context, prompt)
+            
+        except ImportError:
+            await status_msg.edit_text("❌ pypdf library is not installed on the server.")
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Failed to parse PDF: {e}")
+    else:
+        await update.message.reply_text("❌ Currently, only PDF files are supported.")
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles images sent to the bot, uses Gemini 1.5 Vision to analyze them."""
+    if not auth(update):
+        return
+
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if not gemini_key:
+        await update.message.reply_text("❌ GEMINI_API_KEY is not set. Vision is disabled.")
+        return
+
+    status_msg = await update.message.reply_text("👁️ Analyzing image... (using Gemini Vision)")
+    try:
+        photo_file = await update.message.photo[-1].get_file()
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+            await photo_file.download_to_drive(custom_path=tmp.name)
+            
+            genai.configure(api_key=gemini_key)
+            model = genai.GenerativeModel('gemini-flash-latest') # Best stable alias for Free Tier
+            img = Image.open(tmp.name)
+            
+            caption = update.message.caption or "What is in this image? If it is a professor's website, tell me about their research."
+            response = model.generate_content([caption, img])
+            
+            # Delete temp file immediately to save RAM/Disk
+            os.remove(tmp.name)
+            
+        await status_msg.delete()
+        prompt = f"[User sent an image. Gemini Vision analysis: {response.text}]\n\nPlease discuss this with the user."
+        await process_user_input(update, context, prompt)
+        
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Vision failed: {e}")
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles Telegram Voice Notes, transcribes them using Groq API."""
+    if not auth(update):
+        return
+        
+    groq_key = os.getenv("GROQ_API_KEY")
+    if not groq_key:
+        await update.message.reply_text("❌ To process voice notes, please get a free API key from `console.groq.com` and add `GROQ_API_KEY=your_key` to your server's .env file.", parse_mode='Markdown')
+        return
+        
+    status_msg = await update.message.reply_text("🎙️ Listening...")
+    try:
+        voice = update.message.voice
+        file = await context.bot.get_file(voice.file_id)
+        
+        import tempfile
+        import httpx
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as temp_voice:
+            await file.download_to_drive(custom_path=temp_voice.name)
+            
+            with open(temp_voice.name, "rb") as f:
+                response = httpx.post(
+                    "https://api.groq.com/openai/v1/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {groq_key}"},
+                    data={"model": "whisper-large-v3-turbo"},
+                    files={"file": ("audio.ogg", f, "audio/ogg")},
+                    timeout=30.0
+                )
+            
+            os.remove(temp_voice.name)
+            
+            if response.status_code == 200:
+                text = response.json().get("text", "")
+                await status_msg.delete()
+                
+                # Feedback the transcription so the user knows what the bot heard
+                await update.message.reply_text(f"🗣️ *Transcription:* {text}", parse_mode="Markdown")
+                await process_user_input(update, context, text)
+            else:
+                await status_msg.edit_text(f"❌ Groq API Error: {response.status_code} - {response.text}")
+                
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Voice processing failed: {e}")
+
+
+# ─── Background Jobs ─────────────────────────────────────────────────────────
+
+def auto_sync_inbox():
+    """Periodically checks Gmail for professor replies."""
+    logging.info("Running auto-sync for Gmail...")
+    try:
+        sync_gmail.sync_gmail()
+    except Exception as e:
+        logging.error(f"Auto-sync failed: {e}")
+
+def daily_morning_briefing():
+    """Runs daily at 7 AM to send a morning briefing with zero RAM overhead."""
+    logging.info("Running daily morning briefing...")
+    try:
+        stats = get_csv_stats()
+        total = stats['total']
+        sent = stats['sent']
+        pending = stats['pending']
+        pct = round((sent / total) * 100) if total else 0
+        
+        core_mem = "No core memories yet."
+        if os.path.exists("aurora_core_memory.txt"):
+            with open("aurora_core_memory.txt", "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if content:
+                    core_mem = content
+                
+        msg = f"🌅 **Good Morning, {user_name}! Here is your Daily Briefing:**\n\n"
+        msg += f"📊 **Outreach Progress:** {sent}/{total} ({pct}%)\n"
+        msg += f"⏳ **Pending Emails:** {pending}\n\n"
+        
+        # Check Deadlines
+        tracker_type = os.getenv("DEADLINE_TRACKER_TYPE", "json").lower()
+        upcoming = []
+        now = datetime.now()
+        
+        if tracker_type == "json" and os.path.exists("deadlines.json"):
+            import json
+            with open("deadlines.json", "r") as f:
+                deadlines = json.load(f)
+            for d in deadlines:
+                try:
+                    dt = datetime.strptime(d["date"], "%Y-%m-%d")
+                    if 0 <= (dt - now).days <= 7:
+                        upcoming.append(f"🚨 **{d['topic']}** ({d['date']})")
+                except: continue
+        
+        elif tracker_type == "notion":
+            from notion_client import Client
+            notion_token = os.getenv("NOTION_API_KEY")
+            db_id = os.getenv("NOTION_DATABASE_ID")
+            if notion_token and db_id:
+                try:
+                    notion = Client(auth=notion_token)
+                    results = notion.databases.query(database_id=db_id).get("results", [])
+                    for page in results:
+                        title = page["properties"]["Name"]["title"][0]["text"]["content"]
+                        d_val = page["properties"]["Date"]["date"]["start"]
+                        dt = datetime.strptime(d_val, "%Y-%m-%d")
+                        if 0 <= (dt - now).days <= 7:
+                            upcoming.append(f"🚨 **{title}** ({d_val})")
+                except: pass
+
+        elif tracker_type == "google_calendar":
+            try:
+                from googleapiclient.discovery import build
+                import pickle
+                if os.path.exists('token.json'):
+                    with open('token.json', 'rb') as token:
+                        creds = pickle.load(token)
+                    service = build('calendar', 'v3', credentials=creds)
+                    events_result = service.events().list(calendarId='primary', timeMin=now.isoformat() + 'Z',
+                                                        maxResults=20, singleEvents=True, orderBy='startTime').execute()
+                    events = events_result.get('items', [])
+                    for e in events:
+                        title = e['summary']
+                        d_val = e['start'].get('date') or e['start'].get('dateTime')[:10]
+                        dt = datetime.strptime(d_val, "%Y-%m-%d")
+                        if 0 <= (dt - now).days <= 7:
+                            upcoming.append(f"🚨 **{title}** ({d_val})")
+            except: pass
+
+        if upcoming:
+            msg += "📅 **Upcoming Deadlines:**\n" + "\n".join(upcoming) + "\n\n"
+        
+        # Format core memory nicely for the morning brief
+        mem_lines = core_mem.split('\n')
+        msg += f"🧠 **Your Focus/Goals:**\n"
+        for line in mem_lines[:5]:  # Top 5 goals
+            msg += f"{line}\n"
+        if len(mem_lines) > 5:
+            msg += "...\n"
+            
+        msg += f"\n💡 *Let's crush today's goals! Tell me what you're working on.*"
+        
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": msg,
+            "parse_mode": "Markdown"
+        }
+        httpx.post(url, json=payload)
+    except Exception as e:
+        logging.error(f"Morning briefing failed: {e}")
+
+def daily_auto_draft():
+    """Runs daily at 10 AM, drafts emails for up to 2 professors and sends them to Telegram."""
+    logging.info("Running daily auto-draft...")
+    try:
+        pending_univs = [d["prof"]["University"] for d in pending_drafts.values()]
+        
+        profs_drafted = 0
+        for _ in range(2):  # Limit to 2 auto-drafts per morning
+            prof = get_next_professor(exclude_universities=pending_univs)
+            if not prof:
+                break
+                
+            logging.info(f"Auto-drafting for {prof['Professor']}...")
+            draft = outreach_agent.draft_email(
+                prof_name=prof['Professor'],
+                prof_email=prof['Email'],
+                university=prof['University'],
+                interests=prof.get('Research Interests') or prof.get('ResearchInterests', ''),
+                lab_url=prof.get('Lab URL') or prof.get('LabURL', '')
+            )
+            
+            if not draft:
+                continue
+                
+            draft_id = prof['Email']
+            pending_drafts[draft_id] = {
+                "prof": prof,
+                "subject": draft.get("Subject", "PhD Application"),
+                "body": draft.get("Body", "")
+            }
+            
+            pending_univs.append(prof['University'])
+            profs_drafted += 1
+            
+            # Send message to Telegram directly via httpx
+            subject = draft.get('Subject', '')
+            body    = draft.get('Body', '')
+
+            msg  = f"🌅 **Morning Auto-Draft**\n\n"
+            msg += f"🔔 **NEW DRAFT**\n"
+            msg += f"👤 **Prof:** {prof['Professor']} — {prof['University']} ({prof.get('Country', '')})\n"
+            msg += f"✉️ **To:** {prof['Email']}\n\n"
+            msg += f"📌 **Subject:** {subject}\n\n"
+            msg += f"{body}\n\n"
+            msg += "─────────────────────\n"
+            msg += "Approve sending this with CV + Transcript attached?"
+            
+            keyboard = {
+                "inline_keyboard": [
+                    [{"text": "✅ SEND NOW", "callback_data": f"SEND_{draft_id}"}],
+                    [{"text": "🕗 SCHEDULE (8 AM)", "callback_data": f"SCHED_{draft_id}"}],
+                    [{"text": "❌ REJECT / SKIP", "callback_data": f"REJECT_{draft_id}"}]
+                ]
+            }
+            
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+            payload = {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": msg,
+                "parse_mode": "Markdown",
+                "reply_markup": keyboard
+            }
+            httpx.post(url, json=payload)
+            
+        if profs_drafted == 0:
+            logging.info("No professors available for auto-draft.")
+            
+    except Exception as e:
+        logging.error(f"Daily auto-draft failed: {e}")
+
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+
+def main():
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("❌ Error: Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID in .env file.")
+        return
+
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    application.add_handler(CommandHandler("start",   cmd_start))
+    application.add_handler(CommandHandler("next",    cmd_start))
+    application.add_handler(CommandHandler("stats",   cmd_stats))
+    application.add_handler(CommandHandler("pending", cmd_pending))
+    application.add_handler(CommandHandler("find",    cmd_find))
+    application.add_handler(CommandHandler("help",    cmd_help))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_chat))
+    application.add_handler(MessageHandler(filters.Document.PDF, handle_document))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(MessageHandler(filters.VOICE, handle_voice))
+
+    # Set the simplified command menu
+    from telegram import BotCommand
+    commands = [
+        BotCommand("start", "Draft next outreach email"),
+        BotCommand("stats", "Show progress summary"),
+        BotCommand("pending", "List next 10 pending contacts"),
+        BotCommand("find", "Search research topics/profs")
+    ]
+    
+    async def post_init(application):
+        await application.bot.set_my_commands(commands)
+    
+    application.post_init = post_init
+
+    print("🤖 Bot is running! Command menu updated.")
+    print("Commands: /start /next /stats /pending /find <topic> /help")
+    
+    # Schedule background tasks
+    # 1. Sync Inbox every 6 hours
+    scheduler.add_job(auto_sync_inbox, 'interval', hours=6)
+    # 2. Daily morning briefing at 8:00 AM server time
+    scheduler.add_job(daily_morning_briefing, 'cron', hour=8, minute=0)
+    # 3. Auto-draft 2 emails every morning at 10:00 AM server time
+    scheduler.add_job(daily_auto_draft, 'cron', hour=10, minute=0)
+    
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    main()

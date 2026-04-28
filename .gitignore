@@ -1,0 +1,48 @@
+# ─── Secrets & Credentials ────────────────────────────────────────────────────
+.env
+*.pem
+*.key
+token.json
+credentials.json
+gmail_token.json
+
+# ─── Personal Data ────────────────────────────────────────────────────────────
+# Outreach databases (contain real professor emails/data)
+outreach_tracker.csv
+outreach_tracker_backup.csv
+discovered_interviews.csv
+
+# Agent's personal long-term memory
+agent_core_memory.txt
+aurora_core_memory.txt
+
+# Dashboards (contain live personal data)
+dashboard.html
+PhD_Dashboard.html
+
+# Your personal documents
+*.pdf
+google_tasks_raw.txt
+
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+env/
+.venv/
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+bot_log.txt
+
+# ─── OS / Editor ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

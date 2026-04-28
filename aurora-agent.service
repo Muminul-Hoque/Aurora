@@ -1,0 +1,19 @@
+[Unit]
+Description=Aurora — Lightweight AI Personal Agent (Telegram Bot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace 'your_username' with your actual Linux username
+User=your_username
+WorkingDirectory=/home/your_username/aurora-agent
+ExecStart=/home/your_username/aurora-agent/venv/bin/python3 /home/your_username/aurora-agent/telegram_bot.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/your_username/aurora-agent/bot_log.txt
+StandardError=append:/home/your_username/aurora-agent/bot_log.txt
+EnvironmentFile=/home/your_username/aurora-agent/.env
+
+[Install]
+WantedBy=multi-user.target
