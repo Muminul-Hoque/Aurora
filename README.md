@@ -14,12 +14,20 @@ Aurora is a robust, multi-backend AI assistant and Academic Relationship Manager
 
 ## 🚀 Quick Start (Installation)
 
-We have provided a streamlined setup script specifically designed for non-technical users to get Aurora running quickly.
+The easiest way to install and configure Aurora is using our one-command installer. This will automatically clone the repository, set up a secure virtual environment, install all dependencies, and launch the interactive setup wizard.
 
-### 1. Clone the Repository
+**Run this in your terminal:**
 ```bash
-git clone <your-repo-url>
-cd <your-repo-directory>
+curl -sL https://raw.githubusercontent.com/Muminul-Hoque/aurora-phd-agent/main/install.sh | bash
+```
+
+### Manual Installation
+If you prefer to set it up manually:
+
+1. **Clone the Repository**
+```bash
+git clone https://github.com/Muminul-Hoque/aurora-phd-agent.git
+cd aurora-phd-agent
 ```
 
 ### 2. Run the Setup Wizard
