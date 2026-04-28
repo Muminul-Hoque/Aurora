@@ -7,7 +7,6 @@ Aurora is a robust, multi-backend AI assistant and Academic Relationship Manager
 - **🧠 Multi-Model Architecture**: Intelligently routes tasks to the best free/open-source LLMs using OpenRouter (e.g., Hermes 405B for personality/chat, Qwen for tool usage, Gemma for quick tasks).
 - **👁️ Vision & Documents**: Native support for image analysis (via Gemini Flash) and document parsing. Just send a screenshot or PDF via Telegram!
 - **📅 Advanced Deadline Tracking**: Seamlessly tracks deadlines and provides proactive warnings. Configurable backends include local JSON, Notion, or Google Calendar.
-- **✉️ Context-Aware Correspondence prep**: Synthesizes a professor's recent publications to help you draft deeply personalized, highly specific outreach. This is designed for quality and deep alignment, not bulk sending.
 - **🔍 Research & Discovery**: Built-in tools to search the web (DuckDuckGo), read full webpage contents, and query the ArXiv academic database for research papers.
 - **⏱️ Proactive Briefings & Reminders**: Scheduled daily morning briefings and a built-in reminder system (`/schedule_reminder`).
 - **💬 Streaming Responses**: Provides real-time, word-by-word streaming responses in Telegram for a natural conversation flow.
