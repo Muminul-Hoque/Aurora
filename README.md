@@ -1,4 +1,4 @@
-# Aurora: Autonomous Academic Research Agent (Optimized for 1GB RAM Servers)
+# Aurora: Autonomous Academic Research Agent
 
 Aurora is a robust, multi-backend AI assistant and Academic Relationship Manager designed to run continuously on **extremely low-resource servers (like a 1GB RAM Azure VM)**. By leveraging API-based Large Language Models (like Hermes 405B and Gemini Flash) instead of running heavy models locally, Aurora consumes almost zero local RAM while providing state-of-the-art intelligence. She operates via Telegram, acting as a proactive partner for tasks like deep academic research, synthesizing papers, deadline tracking, and preparing highly personalized, context-aware correspondence.
 
