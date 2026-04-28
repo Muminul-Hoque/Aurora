@@ -1,13 +1,13 @@
 # Aurora: Autonomous Personal AI Agent
 
-Aurora is a robust, multi-backend AI assistant and outreach automation agent designed to run continuously on **extremely low-resource servers (like a 1GB RAM Azure VM)**. By leveraging API-based Large Language Models (like Hermes 405B and Gemini Flash) instead of running heavy models locally, Aurora consumes almost zero local RAM while providing state-of-the-art intelligence. She operates via Telegram, providing an intuitive, conversational interface while acting as a proactive partner for tasks like academic research, email drafting, deadline tracking, and web search.
+Aurora is a robust, multi-backend AI assistant and Academic Relationship Manager designed to run continuously on **extremely low-resource servers (like a 1GB RAM Azure VM)**. By leveraging API-based Large Language Models (like Hermes 405B and Gemini Flash) instead of running heavy models locally, Aurora consumes almost zero local RAM while providing state-of-the-art intelligence. She operates via Telegram, acting as a proactive partner for tasks like deep academic research, synthesizing papers, deadline tracking, and preparing highly personalized, context-aware correspondence.
 
 ## ✨ Key Features
 
 - **🧠 Multi-Model Architecture**: Intelligently routes tasks to the best free/open-source LLMs using OpenRouter (e.g., Hermes 405B for personality/chat, Qwen for tool usage, Gemma for quick tasks).
 - **👁️ Vision & Documents**: Native support for image analysis (via Gemini Flash) and document parsing. Just send a screenshot or PDF via Telegram!
 - **📅 Advanced Deadline Tracking**: Seamlessly tracks deadlines and provides proactive warnings. Configurable backends include local JSON, Notion, or Google Calendar.
-- **✉️ Automated Outreach Drafts**: Automatically drafts personalized outreach emails (e.g., for PhD applications or networking) based on CSV tracking sheets, avoiding duplicate contact attempts.
+- **✉️ Context-Aware Correspondence prep**: Synthesizes a professor's recent publications to help you draft deeply personalized, highly specific outreach. This is designed for quality and deep alignment, not bulk sending.
 - **🔍 Research & Discovery**: Built-in tools to search the web (DuckDuckGo), read full webpage contents, and query the ArXiv academic database for research papers.
 - **⏱️ Proactive Briefings & Reminders**: Scheduled daily morning briefings and a built-in reminder system (`/schedule_reminder`).
 - **💬 Streaming Responses**: Provides real-time, word-by-word streaming responses in Telegram for a natural conversation flow.
