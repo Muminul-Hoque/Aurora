@@ -28,7 +28,8 @@ By leveraging API-based Large Language Models instead of running heavy models lo
 
 | Feature | Description |
 | :--- | :--- |
-| **🧠 Multi-Model Routing** | Intelligently routes tasks to the best LLMs via OpenRouter (e.g., Hermes 405B for chat, Qwen for tools, Gemma for speed). |
+| **🧠 Core Differentiator: Persistent Memory** | Aurora maintains long-term, persistent context. She remembers your name, goals, papers you've read, deadlines, and habits. Unlike ChatGPT, she never starts from zero. |
+| **🔄 Multi-Model Routing** | Intelligently routes tasks to the best LLMs via OpenRouter (e.g., Hermes 405B for chat, Qwen for tools, Gemma for speed). |
 | **👁️ Vision & Documents** | Native support for image analysis (Gemini Flash) and document parsing. Just send a screenshot or PDF via Telegram! |
 | **📅 Deadline Tracking** | Seamlessly tracks deadlines with proactive warnings. Connects to local JSON, **Notion**, or **Google Calendar**. |
 | **🔍 Deep Research** | Built-in tools to search DuckDuckGo, scrape full webpages, and query the **ArXiv academic database** for papers. |
