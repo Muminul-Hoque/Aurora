@@ -1,16 +1,15 @@
 <div align="center">
-  
-  # 🌌 Aurora
-  **Autonomous Academic Research Agent Optimized for Low-Resource Servers**
-  
-  [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
-  [![Memory](https://img.shields.io/badge/RAM-1GB_Optimized-success.svg)](#)
-  [![AI: Multi-Agent](https://img.shields.io/badge/AI-Multi--Agent-9cf.svg)](#)
-  [![Interface: Telegram](https://img.shields.io/badge/Interface-Telegram-2CA5E0.svg)](#)
 
-  <br>
+# 🌌 Aurora
+**Autonomous Academic Research Agent for Low-Resource Servers**
 
-  *A proactive AI partner for deep academic research, paper synthesis, and relationship management.*
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![RAM: 1GB Optimized](https://img.shields.io/badge/RAM-1GB_Optimized-success.svg)](https://github.com/Muminul-Hoque/Aurora/blob/main/create_swap.sh)
+[![AI: Multi-Model](https://img.shields.io/badge/AI-Multi--Model-9cf.svg)](#-multi-model-routing)
+[![Interface: Telegram](https://img.shields.io/badge/Interface-Telegram-2CA5E0.svg)](#-telegram-commands)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](#-license)
+
+*A proactive AI partner for academic research, professor outreach, deadline tracking, and daily life — running 24/7 on a cheap cloud VM.*
 
 </div>
 
@@ -18,82 +17,169 @@
 
 ## ⚡ Why Aurora?
 
-Traditional AI agents require heavy local compute or expensive subscriptions. Aurora is engineered specifically for PhD students and researchers who need a powerful, proactive partner running 24/7 on **cheap, low-resource cloud instances** (like a 1GB RAM Azure VM). 
+Traditional AI assistants require expensive subscriptions or heavy local hardware. Aurora is built for PhD students, researchers, and anyone who wants a powerful, always-on AI companion running on **cheap, low-resource cloud instances** (tested on a 1GB RAM Azure VM).
 
-By leveraging API-based Large Language Models instead of running heavy models locally, Aurora consumes almost zero local RAM while routing tasks to powerful API-based LLMs like Gemini Flash and OpenRouter-hosted models.
+By routing all inference to API-based LLMs via OpenRouter and Gemini, Aurora consumes almost zero local RAM — no GPU, no heavy model downloads.
 
 ---
 
-## ✨ Key Features
+## ✨ Features
 
 | Feature | Description |
 | :--- | :--- |
-| **🧠 Core Differentiator: Persistent Memory** | Aurora maintains long-term, persistent context. She remembers your name, goals, papers you've read, deadlines, and habits. Unlike ChatGPT, she never starts from zero. |
-| **🔄 Multi-Model Routing** | Intelligently routes tasks to the best LLMs via OpenRouter (e.g., Hermes 405B for chat, Qwen for tools, Gemma for speed). |
-| **👁️ Vision & Documents** | Native support for image analysis (Gemini Flash) and document parsing. Just send a screenshot or PDF via Telegram! |
-| **📅 Deadline Tracking** | Seamlessly tracks deadlines with proactive warnings. Connects to local JSON, **Notion**, or **Google Calendar**. |
-| **🔍 Deep Research** | Built-in tools to search DuckDuckGo, scrape full webpages, and query the **ArXiv academic database** for papers. |
-| **💬 Live Streaming** | Provides real-time, word-by-word streaming responses in Telegram for a natural, fast conversation flow. |
-| **⏱️ Proactive Briefings** | Wakes up automatically to send scheduled daily morning briefings and handles custom reminders (`/schedule_reminder`). |
+| **🧠 Multi-Model Routing** | Routes tasks to the best-fit free LLM via OpenRouter. 5 specialized model groups: Architect (email, reasoning), Engineer (tools, JSON), Scout (discovery), Scholar (paper summaries), Sprinter (fast tasks). |
+| **👁️ Vision & Images** | Send a screenshot, graph, or photo via Telegram — Gemini Flash analyzes it instantly. |
+| **📅 Deadline Tracking** | Tracks deadlines with proactive warnings. Connects to local JSON, **Notion**, or **Google Calendar**. |
+| **🔍 Deep Research** | Searches DuckDuckGo, scrapes full webpages via Jina Reader, and queries the **ArXiv API** for academic papers. |
+| **🧪 Persistent Memory** | Stores profile data, preferences, and important facts in SQLite with Gemini-powered semantic search. Remembers across sessions. |
+| **📧 Professor Outreach** | Drafts personalized cold emails to academic supervisors from a CSV tracker. Supports send-now or schedule-for-8AM. |
+| **💸 Expense Tracking** | Log expenses by category. Ask Aurora how much you've spent this month. |
+| **🏃 Habit Tracking** | Track daily habits and streaks directly via Telegram. |
+| **🖥️ Server Monitoring** | Ask Aurora about your VM's RAM, disk, or running processes — she runs real bash commands and reports back. |
+| **⏱️ Proactive Briefings** | Scheduled daily morning briefings and custom reminders via `/schedule_reminder`. Powered by APScheduler. |
+| **🔒 Single-User Auth** | Locked to your Telegram Chat ID — no one else can interact with your instance. |
+
+---
+
+## 🧠 Multi-Model Routing
+
+Aurora uses 5 task-specific model groups, each with automatic fallback:
+
+| Group | Best For | Primary Model |
+|---|---|---|
+| **Architect** | Email drafting, reasoning, Aurora's persona | Hermes 3 405B |
+| **Engineer** | Tool calls, JSON tasks, server commands | Qwen3 Coder |
+| **Scout** | Professor discovery, broad world knowledge | GPT-OSS 120B |
+| **Scholar** | Paper summaries, research interest extraction | Nemotron 120B |
+| **Sprinter** | Fast single-turn tasks, sentiment, status | Gemma 3 12B |
+
+All models are **free-tier via OpenRouter** — no paid API required for core functionality.
 
 ---
 
 ## 🚀 Quick Start (One-Command Install)
 
-The easiest way to install and configure Aurora is using our one-command installer. This will automatically clone the repository, set up a secure virtual environment, install all dependencies, and launch the interactive setup wizard.
+> ⚠️ **Security note:** Only run install scripts from repositories you trust and have reviewed.
 
-**Run this in your terminal:**
 ```bash
 curl -sL https://raw.githubusercontent.com/Muminul-Hoque/Aurora/main/install.sh | bash
 ```
 
-> **Note:** The setup wizard will securely prompt you for your Telegram Bot Token and API keys. A `.env` file will be generated automatically.
+The installer clones the repo, creates a virtual environment, installs dependencies, and launches the interactive setup wizard. A `.env` file is generated automatically.
 
 ---
 
 ### 🛠️ Manual Installation
-If you prefer to set it up manually:
 
-1. **Clone the Repository:**
-   ```bash
-   git clone https://github.com/Muminul-Hoque/Aurora.git
-   cd Aurora
-   ```
+```bash
+# 1. Clone
+git clone https://github.com/Muminul-Hoque/Aurora.git
+cd Aurora
 
-2. **Run the Setup Wizard:**
-   ```bash
-   python setup.py
-   ```
+# 2. Run setup wizard
+python setup.py
 
-3. **Start the Agent:**
-   ```bash
-   python telegram_bot.py
-   ```
+# 3. Start the bot
+python telegram_bot.py
+```
+
+For 1GB RAM servers, run the swap script first:
+
+```bash
+bash create_swap.sh
+```
 
 ---
 
 ## 🤖 Telegram Commands
 
-Once running, control Aurora directly from your phone or desktop via Telegram:
+| Command | What it does |
+|---|---|
+| `/start` | Welcome message and status overview |
+| `/stats` | Outreach progress summary (emails sent, pending, scheduled) |
+| `/pending` | List the next 10 professors in the outreach queue |
+| `/find <topic>` | Discover professors by research area |
+| `/schedule_reminder <time> <message>` | Set a custom reminder |
+| `/help` | Show all available commands |
 
-*   📨 `/start` — Process the next item in your tracking sheet.
-*   📊 `/stats` — Show a progress summary of your current tasks.
-*   ⏳ `/pending` — List the next 10 items to be processed.
-*   🔍 `/find <topic>` — Search for research topics or professors.
-
-You can also converse naturally! Ask her to summarize a topic, or send her an image of a complex graph.
+You can also chat naturally — ask Aurora to summarize a paper, search the web, analyze an image, check your RAM, or log an expense.
 
 ---
 
-## ⚙️ Configuration Options
+## ⚙️ Configuration
 
-Aurora is highly customizable. Adjust these settings in your `.env` file:
+Set these in your `.env` file (generated by the setup wizard):
 
-*   **`AGENT_NAME` / `USER_NAME`**: Customize her persona and what she calls you.
-*   **`DEADLINE_TRACKER_TYPE`**: Choose between `json` (local), `notion`, or `google_calendar`.
-*   **`USER_TIMEZONE`**: Ensure highly accurate reminders (e.g., `UTC`, `America/New_York`).
+| Variable | Description |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | Your Telegram bot token from @BotFather |
+| `TELEGRAM_CHAT_ID` | Your personal chat ID (locks the bot to you) |
+| `OPENROUTER_API_KEY` | For multi-model LLM routing (free tier available) |
+| `GEMINI_API_KEY` | For vision, image analysis, and semantic memory embeddings |
+| `AGENT_NAME` / `USER_NAME` | Customize Aurora's name and what she calls you |
+| `DEADLINE_TRACKER_TYPE` | `json` (local), `notion`, or `google_calendar` |
+| `USER_TIMEZONE` | e.g., `UTC`, `Asia/Dhaka`, `America/New_York` |
+| `NOTION_API_KEY` + `NOTION_DATABASE_ID` | Required if using Notion deadline tracking |
+
+---
+
+## 📁 Project Structure
+
+```
+Aurora/
+├── telegram_bot.py       # Main bot — all commands, memory, tool routing
+├── agent.py              # Cold email drafting with anti-hallucination rules
+├── email_sender.py       # Gmail SMTP email sending with attachments
+├── sync_dashboard.py     # CSV dashboard sync
+├── analyze_sentiment.py  # Sentiment analysis utility
+├── aurora-agent.service  # Systemd service file for 24/7 deployment
+├── create_swap.sh        # Swap memory script for 1GB RAM servers
+├── setup.py              # Interactive setup wizard
+├── install.sh            # One-command installer
+├── requirements.txt      # Python dependencies
+└── .env.example          # Environment variable template
+```
+
+---
+
+## 📦 Dependencies
+
+Core stack — no LangChain, no local models:
+
+```
+python-telegram-bot>=20.0
+openai                      # Used as OpenRouter client
+google-generativeai         # Gemini Flash vision + embeddings
+apscheduler                 # Proactive scheduling
+duckduckgo-search           # Web search
+beautifulsoup4              # Web scraping
+httpx                       # Async HTTP (Jina Reader, ArXiv API)
+notion-client               # Notion deadline backend
+google-api-python-client    # Google Calendar backend
+Pillow                      # Image processing
+python-dotenv
+```
+
+---
+
+## 🚢 24/7 Deployment (Linux)
+
+Use the included systemd service to keep Aurora running after reboots:
+
+```bash
+sudo cp aurora-agent.service /etc/systemd/system/
+sudo systemctl enable aurora-agent
+sudo systemctl start aurora-agent
+```
+
+---
+
+## 📄 License
+
+MIT © 2025 Muminul Hoque
+
+---
 
 <div align="center">
-  <br>
   <i>Built for Researchers. Powered by Open Source.</i>
 </div>
