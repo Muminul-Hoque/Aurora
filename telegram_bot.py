@@ -456,11 +456,22 @@ def scheduled_send_job(prof_email: str, subject: str, body: str):
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle inline button clicks (SEND / SCHED / REJECT)."""
+    """Handle inline button clicks (SEND / SCHED / REJECT / REMINDERS)."""
     query = update.callback_query
     await query.answer()
 
     data = query.data
+    
+    # Handle reminder buttons
+    if data.startswith("REMDONE_"):
+        text = query.message.text or "Reminder"
+        await query.edit_message_text(f"✅ **[COMPLETED]**\n\n{text}", parse_mode='Markdown')
+        return
+    elif data.startswith("REMSNOOZE_"):
+        text = query.message.text or "Reminder"
+        await query.edit_message_text(f"⏳ **[NOT YET]**\n\n{text}", parse_mode='Markdown')
+        return
+
     try:
         action, draft_id = data.split("_", 1)
     except ValueError:
@@ -662,11 +673,21 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
         def send_telegram_reminder(reminder_text: str):
             """Sends a reminder message via Telegram API."""
             try:
+                import uuid
+                rem_id = str(uuid.uuid4())[:8]
                 url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
                 payload = {
                     "chat_id": TELEGRAM_CHAT_ID,
                     "text": f"⏰ **REMINDER!**\n\n{reminder_text}",
-                    "parse_mode": "Markdown"
+                    "parse_mode": "Markdown",
+                    "reply_markup": {
+                        "inline_keyboard": [
+                            [
+                                {"text": "✅ Completed", "callback_data": f"REMDONE_{rem_id}"},
+                                {"text": "⏳ Not Yet", "callback_data": f"REMSNOOZE_{rem_id}"}
+                            ]
+                        ]
+                    }
                 }
                 httpx.post(url, json=payload)
             except Exception as e:
