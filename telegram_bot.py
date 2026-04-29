@@ -14,6 +14,9 @@ import httpx
 import google.generativeai as genai
 from PIL import Image
 import time
+import sqlite3
+import json
+import asyncio
 
 # ─── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -25,13 +28,46 @@ logging.basicConfig(
 load_dotenv()
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-TRACKER_PATH     = "tracker.csv"
+CSV_PATH         = "Professor_Outreach_Tracker.csv"
 
 # In-memory store for pending drafts  {email: {prof, subject, body}}
 pending_drafts: dict = {}
 
 # In-memory store for AI chat sessions
 chat_sessions: dict = {}
+
+def init_db():
+    """Initializes the SQLite database for long-term structured memory."""
+    conn = sqlite3.connect('aurora_memory.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS profile (key TEXT PRIMARY KEY, value TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS academic_papers (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, notes TEXT, date_added TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS habits (id INTEGER PRIMARY KEY AUTOINCREMENT, habit_name TEXT, streak INTEGER DEFAULT 0, last_done TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, amount REAL, category TEXT, date_added TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS semantic_memory (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, embedding TEXT)''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# Migrate old text memory to semantic memory if it exists
+if os.path.exists("aurora_core_memory.txt"):
+    try:
+        with open("aurora_core_memory.txt", "r", encoding="utf-8") as f:
+            lines = f.readlines()
+            if lines:
+                conn = sqlite3.connect('aurora_memory.db')
+                c = conn.cursor()
+                for line in lines:
+                    fact = line.replace("- ", "").strip()
+                    if fact:
+                        # Fast insert without embedding just to keep it
+                        c.execute("INSERT INTO semantic_memory (text, embedding) VALUES (?, ?)", (fact, "[]"))
+                conn.commit()
+                conn.close()
+        os.remove("aurora_core_memory.txt")
+    except Exception as e:
+        logging.warning(f"Memory migration failed: {e}")
 
 scheduler = BackgroundScheduler()
 scheduler.start()
@@ -397,11 +433,11 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not auth(update):
         return
 
-    msg  = "🤖 **Personal Assistant Agent — Core Commands**\n\n"
-    msg += "📨 `/start` — Process the next item\n"
-    msg += "📊 `/stats` — Show progress summary\n"
-    msg += "⏳ `/pending` — List next 10 items\n"
-    msg += "🔍 `/find <topic>` — Search for information\n\n"
+    msg  = "🤖 **Aurora Agent — Core Commands**\n\n"
+    msg += "📨 `/start` — Draft the next email\n"
+    msg += "📊 `/stats` — Outreach progress summary\n"
+    msg += "⏳ `/pending` — List next 10 contacts\n"
+    msg += "🔍 `/find <topic>` — Search research topics\n\n"
     msg += "💡 *Tip:* Send me an image to analyze it with Vision, or a PDF to read its contents."
 
     await update.message.reply_text(msg, parse_mode='Markdown')
@@ -523,25 +559,105 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
             except Exception as e:
                 return f"Error executing command: {e}"
 
-        def update_core_memory(fact: str) -> str:
-            """Appends an important fact or goal to Aurora's permanent long-term memory."""
+        def get_embedding(text: str) -> list:
+            gemini_key = os.getenv("GEMINI_API_KEY")
+            if not gemini_key: return []
+            genai.configure(api_key=gemini_key)
             try:
-                with open("aurora_core_memory.txt", "a", encoding="utf-8") as f:
-                    f.write(f"- {fact}\n")
-                return f"Successfully saved to permanent core memory: {fact}"
-            except Exception as e:
-                return f"Failed to save to memory: {e}"
+                res = genai.embed_content(model="models/text-embedding-004", content=text, task_type="retrieval_document")
+                return res['embedding']
+            except:
+                return []
 
-        def read_core_memory() -> str:
-            """Reads the permanent core memory file."""
+        def cosine_similarity(v1, v2):
+            if not v1 or not v2: return 0.0
+            dot_product = sum(a*b for a, b in zip(v1, v2))
+            magnitude = (sum(a*a for a in v1) * sum(b*b for b in v2)) ** 0.5
+            return dot_product / magnitude if magnitude else 0.0
+
+        def manage_profile(key: str, value: str) -> str:
+            """Saves or updates a profile fact (e.g. key='name', value='Muhammed')."""
+            conn = sqlite3.connect('aurora_memory.db')
+            c = conn.cursor()
+            c.execute("INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)", (key, value))
+            conn.commit()
+            conn.close()
+            return f"Profile updated: {key} = {value}"
+            
+        def log_expense(amount: float, category: str) -> str:
+            conn = sqlite3.connect('aurora_memory.db')
+            c = conn.cursor()
+            c.execute("INSERT INTO expenses (amount, category, date_added) VALUES (?, ?, ?)", (amount, category, datetime.now().strftime("%Y-%m-%d")))
+            conn.commit()
+            conn.close()
+            return f"Expense logged: ${amount} for {category}"
+
+        def store_semantic_memory(fact: str) -> str:
+            """Appends an important fact to Aurora's permanent vector memory."""
+            emb = get_embedding(fact)
+            emb_str = json.dumps(emb) if emb else "[]"
+            conn = sqlite3.connect('aurora_memory.db')
+            c = conn.cursor()
+            c.execute("INSERT INTO semantic_memory (text, embedding) VALUES (?, ?)", (fact, emb_str))
+            conn.commit()
+            conn.close()
+            return f"Saved to semantic memory: {fact}"
+
+        def recall_memory(query: str) -> str:
+            """Searches semantic memory for relevant facts using native cosine similarity."""
+            conn = sqlite3.connect('aurora_memory.db')
+            c = conn.cursor()
+            c.execute("SELECT text, embedding FROM semantic_memory")
+            rows = c.fetchall()
+            conn.close()
+            
+            if not rows: return "No semantic memories found."
+            q_emb = get_embedding(query)
+            if not q_emb: return "Failed to generate embedding for query."
+            
+            results = []
+            for text, emb_str in rows:
+                try:
+                    emb = json.loads(emb_str)
+                    if emb:
+                        score = cosine_similarity(q_emb, emb)
+                        results.append((score, text))
+                except: pass
+                
+            results.sort(reverse=True, key=lambda x: x[0])
+            top_3 = [t for s, t in results[:3] if s > 0.5]
+            if not top_3: return "No highly relevant memories found."
+            return "Relevant memories:\n- " + "\n- ".join(top_3)
+
+        def get_memory_digest() -> str:
+            """Generates a summary of long-term memory for the system prompt."""
             try:
-                if os.path.exists("aurora_core_memory.txt"):
-                    with open("aurora_core_memory.txt", "r", encoding="utf-8") as f:
-                        content = f.read().strip()
-                        return content if content else "Core memory is currently empty."
-                return "Core memory is currently empty."
-            except Exception:
-                return "Could not read core memory."
+                conn = sqlite3.connect('aurora_memory.db')
+                c = conn.cursor()
+                digest = "=== SYSTEM PROFILE & LONG-TERM MEMORY ===\n"
+                
+                c.execute("SELECT key, value FROM profile")
+                profile = c.fetchall()
+                if profile:
+                    digest += "\n[Profile Data]\n"
+                    for k, v in profile: digest += f"- {k}: {v}\n"
+                        
+                c.execute("SELECT habit_name, streak, last_done FROM habits")
+                habits = c.fetchall()
+                if habits:
+                    digest += "\n[Habits]\n"
+                    for h, s, l in habits: digest += f"- {h}: Streak {s} (Last: {l})\n"
+                        
+                c.execute("SELECT title FROM academic_papers ORDER BY id DESC LIMIT 5")
+                papers = c.fetchall()
+                if papers:
+                    digest += "\n[Recently Read Papers]\n"
+                    for p in papers: digest += f"- {p[0]}\n"
+                        
+                conn.close()
+                return digest
+            except Exception as e:
+                return f"Memory read error: {e}"
 
         def send_telegram_reminder(reminder_text: str):
             """Sends a reminder message via Telegram API."""
@@ -693,55 +809,66 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
             
             return "Unknown tracker type."
 
-        def search_web(query: str) -> str:
+        async def search_web(query: str) -> str:
             """Searches the internet for the given query using DuckDuckGo."""
             try:
+                # Run the synchronous DuckDuckGo search in a threadpool
                 from duckduckgo_search import DDGS
-                results = ""
-                with DDGS() as ddgs:
-                    for item in ddgs.text(query, max_results=5):
-                        results += f"Title: {item.get('title')}\nURL: {item.get('href')}\nSnippet: {item.get('body')}\n\n"
-                return results if results else "No results found."
-            except ImportError:
-                return "Web search error: duckduckgo-search package is not installed on the server."
+                def _search():
+                    results = ""
+                    with DDGS() as ddgs:
+                        for item in ddgs.text(query, max_results=5):
+                            results += f"Title: {item.get('title')}\nURL: {item.get('href')}\nSnippet: {item.get('body')}\n\n"
+                    return results if results else "No results found."
+                return await asyncio.to_thread(_search)
             except Exception as e:
                 return f"Web search error: {e}"
 
-        def fetch_webpage(url: str) -> str:
-            """Fetches and reads the full markdown content of a URL using Jina Reader."""
+        async def fetch_webpage(url: str) -> str:
+            """Fetches and reads the full markdown content of a URL using Jina Reader asynchronously."""
             try:
-                if not url.startswith("http"):
-                    url = "http://" + url
+                if not url.startswith("http"): url = "http://" + url
                 jina_url = f"https://r.jina.ai/{url}"
-                response = httpx.get(jina_url, timeout=20.0)
-                if response.status_code == 200:
-                    return response.text[:8000] # Cap at 8000 chars to save tokens
-                return f"Fetch failed: Status {response.status_code}"
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(jina_url, timeout=20.0)
+                    if response.status_code == 200:
+                        return response.text[:8000] # Cap at 8000 chars
+                    return f"Fetch failed: Status {response.status_code}"
             except Exception as e:
                 return f"Fetch error: {e}"
+                
+        async def async_fetch_multiple_webpages(urls: list) -> str:
+            """Fetches multiple webpages concurrently for fast multi-source synthesis."""
+            results = await asyncio.gather(*(fetch_webpage(url) for url in urls[:5]), return_exceptions=True)
+            output = ""
+            for i, res in enumerate(results):
+                output += f"\n--- Content from {urls[i]} ---\n"
+                output += str(res)[:4000] # 4k chars per page when doing multi
+            return output
 
-        def search_arxiv(query: str) -> str:
+        async def search_arxiv(query: str) -> str:
             """Searches the ArXiv academic database for papers."""
             try:
                 import urllib.parse
                 safe_query = urllib.parse.quote(query)
                 url = f"http://export.arxiv.org/api/query?search_query=all:{safe_query}&max_results=3"
-                response = httpx.get(url, timeout=15.0)
-                if response.status_code == 200:
-                    return response.text[:4000] # Return raw XML, LLMs can read it easily
-                return f"ArXiv search failed: Status {response.status_code}"
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(url, timeout=15.0)
+                    if response.status_code == 200:
+                        return response.text[:4000]
+                    return f"ArXiv search failed: Status {response.status_code}"
             except Exception as e:
                 return f"ArXiv search error: {e}"
 
         # Always inject the latest core memory into the system prompt
-        core_memory = read_core_memory()
+        core_memory = get_memory_digest()
         from datetime import datetime
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         # ── Configuration ──────────────────────────────────────────────────
         agent_name = os.getenv("AGENT_NAME", "Aurora")
-        user_name  = os.getenv("USER_NAME", "User")
-        timezone   = os.getenv("USER_TIMEZONE", "UTC")
+        user_name  = os.getenv("USER_NAME", "Muhammed")
+        timezone   = os.getenv("USER_TIMEZONE", "UTC+6")
         
         system_prompt = (
             f"You are {agent_name} — not just an AI assistant, but a deeply intelligent, warm, and caring companion for {user_name}. "
@@ -826,10 +953,7 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "command": {
-                                "type": "string",
-                                "description": "The bash command to run"
-                            }
+                            "command": {"type": "string", "description": "The bash command to run"}
                         },
                         "required": ["command"]
                     }
@@ -838,15 +962,42 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
             {
                 "type": "function",
                 "function": {
-                    "name": "update_core_memory",
-                    "description": "Saves an important fact, goal, or preference about Muhammed to your permanent long-term memory file. Use this whenever he tells you something you should remember for future conversations.",
+                    "name": "manage_profile",
+                    "description": "Updates the user's permanent profile profile details (e.g., name, role, goals).",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "fact": {
-                                "type": "string",
-                                "description": "The specific fact, goal, or preference to remember. Be concise."
-                            }
+                            "key": {"type": "string", "description": "The setting key to update (e.g., 'name', 'goal')."},
+                            "value": {"type": "string", "description": "The new value."}
+                        },
+                        "required": ["key", "value"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "log_expense",
+                    "description": "Logs an expense into the SQLite database for personal tracking.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "amount": {"type": "number", "description": "The cost of the item."},
+                            "category": {"type": "string", "description": "What the expense was for (e.g., 'food', 'books')."}
+                        },
+                        "required": ["amount", "category"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "store_semantic_memory",
+                    "description": "Saves an important personal fact, preference, or past event to long-term vector memory.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "fact": {"type": "string", "description": "The fact to remember permanently."}
                         },
                         "required": ["fact"]
                     }
@@ -855,15 +1006,26 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
             {
                 "type": "function",
                 "function": {
-                    "name": "search_web",
-                    "description": "Searches the internet (Google/DuckDuckGo) for a given query and returns search results.",
+                    "name": "recall_memory",
+                    "description": "Searches the permanent long-term memory for past facts, preferences, or events.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "The search query to look up on the internet."
-                            }
+                            "query": {"type": "string", "description": "What you want to remember or search for."}
+                        },
+                        "required": ["query"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_web",
+                    "description": "Searches the internet for a given query.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "The search query."}
                         },
                         "required": ["query"]
                     }
@@ -873,14 +1035,11 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 "type": "function",
                 "function": {
                     "name": "fetch_webpage",
-                    "description": "Fetches and reads the full markdown content of any specific URL website.",
+                    "description": "Fetches and reads the full markdown content of a single specific URL.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "url": {
-                                "type": "string",
-                                "description": "The complete URL of the website to read (e.g., https://example.com)."
-                            }
+                            "url": {"type": "string", "description": "The complete URL to read."}
                         },
                         "required": ["url"]
                     }
@@ -889,15 +1048,26 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
             {
                 "type": "function",
                 "function": {
-                    "name": "search_arxiv",
-                    "description": "Searches the ArXiv academic database for research papers on a specific topic.",
+                    "name": "async_fetch_multiple_webpages",
+                    "description": "Fetches multiple webpages simultaneously for rapid research synthesis.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "The research topic or keywords to search for on ArXiv."
-                            }
+                            "urls": {"type": "array", "items": {"type": "string"}, "description": "List of URLs to fetch concurrently (max 5)."}
+                        },
+                        "required": ["urls"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_arxiv",
+                    "description": "Searches the ArXiv database for academic papers.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "Topic to search for."}
                         },
                         "required": ["query"]
                     }
@@ -907,18 +1077,12 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 "type": "function",
                 "function": {
                     "name": "schedule_reminder",
-                    "description": "Schedules a reminder message to be sent to Muhammed at a specific future time.",
+                    "description": "Schedules a reminder message to be sent at a specific future time.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "reminder_text": {
-                                "type": "string",
-                                "description": "The text of the reminder to send (e.g., 'Submit DAAD application!')."
-                            },
-                            "trigger_time": {
-                                "type": "string",
-                                "description": "The exact date and time to send the reminder, strictly in 'YYYY-MM-DD HH:MM:SS' format."
-                            }
+                            "reminder_text": {"type": "string", "description": "The text of the reminder."},
+                            "trigger_time": {"type": "string", "description": "Date and time in 'YYYY-MM-DD HH:MM:SS'."}
                         },
                         "required": ["reminder_text", "trigger_time"]
                     }
@@ -979,156 +1143,95 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
         if response_msg.tool_calls:
             import json
             for tool_call in response_msg.tool_calls:
-                if tool_call.function.name == "run_server_command":
-                    args = json.loads(tool_call.function.arguments)
-                    cmd = args.get("command", "")
-                    tool_output = run_server_command(cmd)
-                    
-                    chat_sessions[chat_id].append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "name": "run_server_command",
-                        "content": tool_output
-                    })
-                elif tool_call.function.name == "update_core_memory":
-                    args = json.loads(tool_call.function.arguments)
-                    fact = args.get("fact", "")
-                    tool_output = update_core_memory(fact)
-                    
-                    chat_sessions[chat_id].append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "name": "update_core_memory",
-                        "content": tool_output
-                    })
-                elif tool_call.function.name == "search_web":
-                    args = json.loads(tool_call.function.arguments)
-                    query = args.get("query", "")
-                    tool_output = search_web(query)
-                    
-                    chat_sessions[chat_id].append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "name": "search_web",
-                        "content": tool_output
-                    })
-                elif tool_call.function.name == "fetch_webpage":
-                    args = json.loads(tool_call.function.arguments)
-                    url = args.get("url", "")
-                    tool_output = fetch_webpage(url)
-                    
-                    chat_sessions[chat_id].append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "name": "fetch_webpage",
-                        "content": tool_output
-                    })
-                elif tool_call.function.name == "search_arxiv":
-                    args = json.loads(tool_call.function.arguments)
-                    query = args.get("query", "")
-                    tool_output = search_arxiv(query)
-                    
-                    chat_sessions[chat_id].append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "name": "search_arxiv",
-                        "content": tool_output
-                    })
-                elif tool_call.function.name == "schedule_reminder":
-                    args = json.loads(tool_call.function.arguments)
-                    text = args.get("reminder_text", "")
-                    trigger = args.get("trigger_time", "")
-                    tool_output = schedule_reminder(text, trigger)
-                    
-                    chat_sessions[chat_id].append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "name": "schedule_reminder",
-                        "content": tool_output
-                    })
-                elif tool_call.function.name == "manage_deadline":
-                    args = json.loads(tool_call.function.arguments)
-                    action = args.get("action", "")
-                    topic = args.get("topic", "")
-                    date = args.get("date", "")
-                    tool_output = manage_deadline(action, topic, date)
-                    
-                    chat_sessions[chat_id].append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "name": "manage_deadline",
-                        "content": tool_output
-                    })
-            
-            # Final pass: Streaming human response from ARCHITECT
-            status_msg = await update.message.reply_text("Thinking...")
-            
-            last_edit_time = time.time()
-            full_content = ""
-            
-            # We try the Architect models for streaming
-            for model in ARCHITECT_MODELS:
+                func_name = tool_call.function.name
+                args = json.loads(tool_call.function.arguments)
+                tool_output = ""
+                
                 try:
-                    stream = openai_client.chat.completions.create(
-                        model=model,
-                        messages=chat_sessions[chat_id],
-                        temperature=0.7,
-                        stream=True
-                    )
-                    
-                    for chunk in stream:
-                        if chunk.choices and chunk.choices[0].delta.content:
-                            full_content += chunk.choices[0].delta.content
-                            
-                            # Update Telegram every 1.5 seconds to avoid rate limits
-                            if time.time() - last_edit_time > 1.5:
-                                try:
-                                    await status_msg.edit_text(full_content + " ▌")
-                                    last_edit_time = time.time()
-                                except: pass # Telegram edit conflict
-                    
-                    # Final update
-                    await status_msg.edit_text(full_content)
-                    chat_sessions[chat_id].append({"role": "assistant", "content": full_content})
-                    return # Exit after successful stream
-                    
+                    if func_name == "run_server_command":
+                        tool_output = run_server_command(args.get("command", ""))
+                    elif func_name == "manage_profile":
+                        tool_output = manage_profile(args.get("key", ""), args.get("value", ""))
+                    elif func_name == "log_expense":
+                        tool_output = log_expense(args.get("amount", 0.0), args.get("category", ""))
+                    elif func_name == "store_semantic_memory":
+                        tool_output = store_semantic_memory(args.get("fact", ""))
+                    elif func_name == "recall_memory":
+                        tool_output = recall_memory(args.get("query", ""))
+                    elif func_name == "search_web":
+                        tool_output = await search_web(args.get("query", ""))
+                    elif func_name == "fetch_webpage":
+                        tool_output = await fetch_webpage(args.get("url", ""))
+                    elif func_name == "async_fetch_multiple_webpages":
+                        tool_output = await async_fetch_multiple_webpages(args.get("urls", []))
+                    elif func_name == "search_arxiv":
+                        tool_output = await search_arxiv(args.get("query", ""))
+                    elif func_name == "manage_deadline":
+                        tool_output = manage_deadline(args.get("action", ""), args.get("topic", ""), args.get("date", ""))
+                    elif func_name == "schedule_reminder":
+                        tool_output = schedule_reminder(args.get("reminder_text", ""), args.get("trigger_time", ""))
+                    else:
+                        tool_output = f"Unknown tool: {func_name}"
                 except Exception as e:
-                    logging.warning(f"Streaming failed for {model}: {e}")
-                    continue
+                    tool_output = f"Error executing tool {func_name}: {str(e)}"
+                    
+                chat_sessions[chat_id].append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "name": func_name,
+                    "content": tool_output
+                })
             
-            await status_msg.edit_text("❌ All models failed to stream.")
-
+            # Architect generates final response based on tool outputs
+            completion = call_llm(chat_sessions[chat_id], mode='chat')
+            draft_content = completion.choices[0].message.content
         else:
-            # Handle pure conversation (streaming)
-            status_msg = await update.message.reply_text("Aurora is thinking...")
-            last_edit_time = time.time()
-            full_content = ""
+            # No tools were called, the initial completion IS the draft
+            draft_content = response_msg.content
+
+        # ── Editor Loop (Internal Monologue) ──
+        status_msg = await update.message.reply_text("Aurora is reviewing...")
+        
+        editor_messages = [
+            {"role": "system", "content": "You are Aurora's internal editor. Review the drafted response for accuracy, warmth, and ensure it respects the user's constraints. Output ONLY the improved final message without any meta-commentary."},
+            {"role": "user", "content": f"Draft Response to review:\n{draft_content}"}
+        ]
+        
+        last_edit_time = time.time()
+        full_content = ""
+        
+        # Try fast SPRINTER models first for editing, fallback to Architect
+        for model in SPRINTER_MODELS + ARCHITECT_MODELS:
+            try:
+                stream = openai_client.chat.completions.create(
+                    model=model,
+                    messages=editor_messages,
+                    temperature=0.3,
+                    stream=True
+                )
+                
+                for chunk in stream:
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        full_content += chunk.choices[0].delta.content
+                        if time.time() - last_edit_time > 1.5:
+                            try:
+                                await status_msg.edit_text(full_content + " ▌")
+                                last_edit_time = time.time()
+                            except: pass
+                
+                await status_msg.edit_text(full_content)
+                chat_sessions[chat_id].append({"role": "assistant", "content": full_content})
+                return
+            except Exception as e:
+                logging.warning(f"Editor streaming failed for {model}: {e}")
+                continue
+                
+        # If editor fails completely, just send the raw draft
+        if draft_content:
+            await status_msg.edit_text(draft_content)
+            chat_sessions[chat_id].append({"role": "assistant", "content": draft_content})
+            return
             
-            for model in ARCHITECT_MODELS:
-                try:
-                    stream = openai_client.chat.completions.create(
-                        model=model,
-                        messages=chat_sessions[chat_id],
-                        temperature=0.7,
-                        stream=True
-                    )
-                    
-                    for chunk in stream:
-                        if chunk.choices and chunk.choices[0].delta.content:
-                            full_content += chunk.choices[0].delta.content
-                            if time.time() - last_edit_time > 1.5:
-                                try:
-                                    await status_msg.edit_text(full_content + " ▌")
-                                    last_edit_time = time.time()
-                                except: pass
-                    
-                    await status_msg.edit_text(full_content)
-                    chat_sessions[chat_id].append({"role": "assistant", "content": full_content})
-                    return
-                except Exception as e:
-                    logging.warning(f"Streaming failed for {model}: {e}")
-                    continue
-                    
     except Exception as e:
         await update.message.reply_text(f"❌ AI Error: {e}")
 
