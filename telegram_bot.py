@@ -203,8 +203,7 @@ def auth(update: Update) -> bool:
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /start — Draft email for the next pending professor.
-    Skips universities that already have a pending draft (anti-spam).
+    /start — Welcome message.
     """
     if not auth(update):
         await update.message.reply_text(
@@ -212,70 +211,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Universities with drafts already pending
-    pending_univs = [d["prof"]["University"] for d in pending_drafts.values()]
-
-    prof = get_next_professor(exclude_universities=pending_univs)
-    if not prof:
-        if pending_univs:
-            await update.message.reply_text(
-                "⏸ All remaining pending professors belong to universities that already "
-                "have a draft awaiting your decision. Approve or reject existing drafts first!"
-            )
-        else:
-            await update.message.reply_text(
-                "✅ No pending professors found in the CSV!\n"
-                "Use /stats to check your progress or add more professors."
-            )
-        return
-
-    await update.message.reply_text(
-        f"⏳ Drafting email for **{prof['Professor']}** ({prof['University']}) using Minimax AI…",
-        parse_mode='Markdown'
+    msg = (
+        "🌅 **Welcome back!**\n\n"
+        "I'm Aurora, your autonomous research and outreach agent. "
+        "You can send me messages, voice notes, or PDFs, and I'll remember our conversations!\n\n"
+        "Type `/help` to see available commands."
     )
-
-    draft = outreach_agent.draft_email(
-        prof_name=prof['Professor'],
-        prof_email=prof['Email'],
-        university=prof['University'],
-        interests=prof.get('Research Interests') or prof.get('ResearchInterests', ''),
-        lab_url=prof.get('Lab URL') or prof.get('LabURL', '')
-    )
-
-    if not draft:
-        await update.message.reply_text(
-            "❌ Failed to generate draft. Check your OPENROUTER_API_KEY in .env"
-        )
-        return
-
-    draft_id = prof['Email']
-    pending_drafts[draft_id] = {
-        "prof": prof,
-        "subject": draft.get("Subject", "PhD Application"),
-        "body": draft.get("Body", "")
-    }
-
-    subject = draft.get('Subject', '')
-    body    = draft.get('Body', '')
-
-    msg  = f"🔔 **NEW DRAFT**\n"
-    msg += f"👤 **Prof:** {prof['Professor']} — {prof['University']} ({prof.get('Country', '')})\n"
-    msg += f"✉️ **To:** {prof['Email']}\n\n"
-    msg += f"📌 **Subject:** {subject}\n\n"
-    msg += f"{body}\n\n"
-    msg += "─────────────────────\n"
-    msg += "Approve sending this with CV + Transcript attached?"
-
-    keyboard = [
-        [InlineKeyboardButton("✅ SEND NOW",            callback_data=f"SEND_{draft_id}")],
-        [InlineKeyboardButton("🕗 SCHEDULE (8 AM)",     callback_data=f"SCHED_{draft_id}")],
-        [InlineKeyboardButton("❌ REJECT / SKIP",        callback_data=f"REJECT_{draft_id}")]
-    ]
-    await update.message.reply_text(
-        msg,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
-    )
+    await update.message.reply_text(msg, parse_mode='Markdown')
 
 
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1594,8 +1536,6 @@ def main():
     scheduler.add_job(auto_sync_inbox, 'interval', hours=6)
     # 2. Daily morning briefing at 8:00 AM server time
     scheduler.add_job(daily_morning_briefing, 'cron', hour=8, minute=0)
-    # 3. Auto-draft 2 emails every morning at 10:00 AM server time
-    scheduler.add_job(daily_auto_draft, 'cron', hour=10, minute=0)
     
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
