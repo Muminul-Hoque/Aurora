@@ -7,7 +7,7 @@
 [![RAM: 1GB Optimized](https://img.shields.io/badge/RAM-1GB_Optimized-success.svg)](https://github.com/Muminul-Hoque/Aurora/blob/main/create_swap.sh)
 [![AI: Multi-Model](https://img.shields.io/badge/AI-Multi--Model-9cf.svg)](#-multi-model-routing)
 [![Interface: Telegram](https://img.shields.io/badge/Interface-Telegram-2CA5E0.svg)](#-telegram-commands)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](#-license)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](#-license)
 
 *A proactive AI partner for academic research, professor outreach, deadline tracking, and daily life — running 24/7 on a cheap cloud VM.*
 
@@ -176,7 +176,12 @@ sudo systemctl start aurora-agent
 
 ## 📄 License
 
-MIT © 2025 Muminul Hoque
+This project is licensed under the **GNU AGPL v3** License. 
+
+You are free to use, modify, and distribute this software for personal, academic, and open-source projects. However, if you use this code in a commercial product or service, you **must** open-source your entire project under the same AGPL v3 license.
+
+**Commercial Licensing:** 
+If you wish to use Aurora commercially without open-sourcing your proprietary code, a separate commercial license is required. Contact: **muminul951@gmail.com**
 
 ---
 
