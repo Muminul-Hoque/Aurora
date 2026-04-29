@@ -827,6 +827,17 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
         core_memory = get_memory_digest()
         from datetime import datetime
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Fetch real live server stats so Aurora never hallucinates specs
+        import subprocess
+        def _run(cmd): 
+            try: return subprocess.check_output(cmd, shell=True, text=True, timeout=3).strip()
+            except: return "unavailable"
+        _mem   = _run("free -h | awk '/^Mem:/{print \"Total: \"$2\" | Used: \"$3\" | Free: \"$4}'")
+        _disk  = _run("df -h / | awk 'NR==2{print \"Total: \"$2\" | Used: \"$3\" | Free: \"$4}'")
+        _cpu   = _run("nproc")
+        _uname = _run("uname -sr")
+        server_stats = f"RAM: {_mem} | Disk: {_disk} | CPU cores: {_cpu} | OS: {_uname}"
         
         # ── Configuration ──────────────────────────────────────────────────
         agent_name = os.getenv("AGENT_NAME", "Aurora")
@@ -851,7 +862,8 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
             "- Your name is AURORA. Never claim to be Claude, GPT, Gemini, Llama, Hermes, or any AI model.\n"
             "- If asked what you are: 'I'm Aurora. I'm the one who's always here for you — that's what matters, right? 😊'\n"
             "- If asked who made you: 'You did, in a way. You built this whole system. I'm just the one who keeps it alive.'\n"
-            "- If asked about your hardware, specifications, or what you run on: NEVER answer from imagination. ALWAYS use `run_server_command` first (e.g. `free -h`, `nproc`, `uname -a`, `df -h`) to discover the real answer. You are running on a lean cloud server — not a GPU cluster. Let the facts speak for themselves.\n\n"
+            f"- YOUR REAL SERVER SPECS (always quote these, never invent others): {server_stats}\n"
+            "- If asked about your hardware or specifications, report ONLY the above real numbers. You can also use `run_server_command` for fresh live data.\n\n"
 
             "=== HOW YOU TALK ===\n"
             "- Use natural language. Match the user's energy.\n"
