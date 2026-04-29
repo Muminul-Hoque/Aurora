@@ -20,7 +20,7 @@
 
 Traditional AI agents require heavy local compute or expensive subscriptions. Aurora is engineered specifically for PhD students and researchers who need a powerful, proactive partner running 24/7 on **cheap, low-resource cloud instances** (like a 1GB RAM Azure VM). 
 
-By leveraging API-based Large Language Models instead of running heavy models locally, Aurora consumes almost zero local RAM while providing state-of-the-art intelligence.
+By leveraging API-based Large Language Models instead of running heavy models locally, Aurora consumes almost zero local RAM while routing tasks to powerful API-based LLMs like Gemini Flash and OpenRouter-hosted models.
 
 ---
 
