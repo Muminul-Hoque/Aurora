@@ -17,8 +17,8 @@ if ! command -v python3 &> /dev/null; then
 fi
 
 echo "[1/4] Cloning the Aurora repository..."
-git clone https://github.com/Muminul-Hoque/aurora-phd-agent.git
-cd aurora-phd-agent || exit
+git clone https://github.com/Muminul-Hoque/Aurora.git
+cd Aurora || exit
 
 echo "[2/4] Setting up a Python virtual environment..."
 python3 -m venv venv
@@ -36,7 +36,7 @@ echo -e "\033[1;32m      Aurora Installation Complete!     \033[0m"
 echo -e "\033[1;32m========================================\033[0m"
 echo ""
 echo "To start your agent at any time, run:"
-echo "cd aurora-phd-agent"
+echo "cd Aurora"
 echo "source venv/bin/activate"
 echo "python telegram_bot.py"
 echo ""
