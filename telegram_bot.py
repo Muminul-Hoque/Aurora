@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
 import outreach_agent
 import email_sender
@@ -45,10 +46,32 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS habits (id INTEGER PRIMARY KEY AUTOINCREMENT, habit_name TEXT, streak INTEGER DEFAULT 0, last_done TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, amount REAL, category TEXT, date_added TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS semantic_memory (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, embedding TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS chat_history (chat_id TEXT PRIMARY KEY, history_json TEXT)''')
     conn.commit()
     conn.close()
 
 init_db()
+
+def load_chat_sessions():
+    conn = sqlite3.connect('aurora_memory.db')
+    c = conn.cursor()
+    c.execute("SELECT chat_id, history_json FROM chat_history")
+    for row in c.fetchall():
+        try:
+            chat_sessions[row[0]] = json.loads(row[1])
+        except:
+            pass
+    conn.close()
+
+def save_chat_session(chat_id):
+    conn = sqlite3.connect('aurora_memory.db')
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO chat_history (chat_id, history_json) VALUES (?, ?)", 
+              (chat_id, json.dumps(chat_sessions[chat_id])))
+    conn.commit()
+    conn.close()
+
+load_chat_sessions()
 
 # Migrate old text memory to semantic memory if it exists
 if os.path.exists("aurora_core_memory.txt"):
@@ -69,7 +92,10 @@ if os.path.exists("aurora_core_memory.txt"):
     except Exception as e:
         logging.warning(f"Memory migration failed: {e}")
 
-scheduler = BackgroundScheduler()
+jobstores = {
+    'default': SQLAlchemyJobStore(url='sqlite:///aurora_jobs.sqlite')
+}
+scheduler = BackgroundScheduler(jobstores=jobstores)
 scheduler.start()
 
 # ─── Model Groups (Smart Routing) ────────────────────────────────────────────
@@ -898,9 +924,11 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
             
         chat_sessions[chat_id].append({"role": "user", "content": user_text})
         
-        # Prevent infinite memory growth by keeping only System Prompt + Last 10 messages
-        if len(chat_sessions[chat_id]) > 11:
-            chat_sessions[chat_id] = [chat_sessions[chat_id][0]] + chat_sessions[chat_id][-10:]
+        # Prevent infinite memory growth by keeping only System Prompt + Last 50 messages
+        if len(chat_sessions[chat_id]) > 51:
+            chat_sessions[chat_id] = [chat_sessions[chat_id][0]] + chat_sessions[chat_id][-50:]
+        
+        save_chat_session(chat_id)
         
         # Tools definition for OpenAI schema
         tools = [
@@ -1112,7 +1140,16 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
         completion = call_llm(chat_sessions[chat_id], tools=tools, mode=first_mode)
         
         response_msg = completion.choices[0].message
-        chat_sessions[chat_id].append(response_msg) # Add assistant message to history
+        
+        # Convert response_msg object to dict so it can be serialized to SQLite
+        msg_dict = {"role": response_msg.role, "content": response_msg.content or ""}
+        if response_msg.tool_calls:
+            msg_dict["tool_calls"] = [
+                {"id": t.id, "type": "function", "function": {"name": t.function.name, "arguments": t.function.arguments}}
+                for t in response_msg.tool_calls
+            ]
+        chat_sessions[chat_id].append(msg_dict)
+        save_chat_session(chat_id)
         
         # Handle tool calls
         if response_msg.tool_calls:
@@ -1157,6 +1194,8 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     "content": tool_output
                 })
             
+            save_chat_session(chat_id)
+            
             # Architect generates final response based on tool outputs
             completion = call_llm(chat_sessions[chat_id], mode='chat')
             draft_content = completion.choices[0].message.content
@@ -1196,6 +1235,7 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 
                 await status_msg.edit_text(full_content)
                 chat_sessions[chat_id].append({"role": "assistant", "content": full_content})
+                save_chat_session(chat_id)
                 return
             except Exception as e:
                 logging.warning(f"Editor streaming failed for {model}: {e}")
@@ -1205,6 +1245,7 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
         if draft_content:
             await status_msg.edit_text(draft_content)
             chat_sessions[chat_id].append({"role": "assistant", "content": draft_content})
+            save_chat_session(chat_id)
             return
             
     except Exception as e:

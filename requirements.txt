@@ -11,3 +11,4 @@ httpx
 Pillow
 google-generativeai
 notion-client
+SQLAlchemy
