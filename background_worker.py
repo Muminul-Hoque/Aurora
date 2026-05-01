@@ -24,7 +24,9 @@ WORKER_MODELS = [
     "meta-llama/llama-3.3-70b-instruct:free",
     "google/gemma-3-27b-it:free",
     "nousresearch/hermes-3-llama-3.1-405b:free",
-    "qwen/qwen3-coder:free"
+    "qwen/qwen3-coder:free",
+    "openai/gpt-oss-120b:free",
+    "nvidia/nemotron-3-super-120b-a12b:free"
 ]
 
 # ─── Stateless Research Tools ──────────────────────────────────────────────────
@@ -183,6 +185,7 @@ async def run_background_agent(goal: str, chat_id: str):
                 except Exception as e:
                     logging.warning(f"[Worker] Model {model} failed: {e}")
                     last_err = e
+                    await asyncio.sleep(2)  # Give OpenRouter a breather before trying the next model
                     continue
                     
             if not response:
