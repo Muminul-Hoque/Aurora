@@ -10,7 +10,9 @@ gmail_token.json
 # Outreach databases (contain real professor emails/data)
 outreach_tracker.csv
 outreach_tracker_backup.csv
+Professor_Outreach_Tracker.csv
 discovered_interviews.csv
+deadlines.json
 
 # Agent's personal long-term memory
 agent_core_memory.txt
@@ -51,3 +53,8 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# ─── Databases ────────────────────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3

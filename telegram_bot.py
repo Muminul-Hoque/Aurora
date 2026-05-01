@@ -11,6 +11,8 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 import outreach_agent
 import email_sender
 import sync_gmail
+import skill_loop
+import heartbeat
 import httpx
 import google.generativeai as genai
 from PIL import Image
@@ -411,7 +413,34 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 
-# ─── Button Handler ──────────────────────────────────────────────────────────
+async def cmd_skills(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /skills — List all skills Aurora has learned from past conversations.
+    (Hermes-style self-improving memory)
+    """
+    if not auth(update):
+        return
+    msg = skill_loop.list_all_skills()
+    # Trim if too long for Telegram's 4096 char limit
+    if len(msg) > 3800:
+        msg = msg[:3800] + "\n\n…_(list truncated)_"
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+
+async def cmd_test_heartbeat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /test_heartbeat — Force-run the OpenClaw-style heartbeat and show result.
+    Useful to verify it's working without waiting 6 hours.
+    """
+    if not auth(update):
+        return
+    await update.message.reply_text("🫀 Running heartbeat check across all 5 modules…")
+    result = heartbeat.run_test_heartbeat()
+    if len(result) > 3800:
+        result = result[:3800] + "\n\n…_(truncated)_"
+    await update.message.reply_text(result, parse_mode='Markdown')
+
+
 
 def scheduled_send_job(prof_email: str, subject: str, body: str):
     """APScheduler job: send email at scheduled time."""
@@ -854,6 +883,10 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
         from datetime import datetime
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+        # ─── Skill Loop: inject a relevant learned skill if one matches ─────
+        relevant_skill = skill_loop.find_relevant_skill(user_text)
+        skill_injection = relevant_skill if relevant_skill else ""
+
         # Fetch real live server stats so Aurora never hallucinates specs
         import subprocess
         def _run(cmd): 
@@ -911,6 +944,7 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
             f"{core_memory}\n"
             "===========================================\n"
             "Read this memory before every reply. Reference it naturally. This is what makes you feel real."
+            f"{skill_injection}"
         )
 
         # Initialize or update system prompt in chat history
@@ -1236,6 +1270,14 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 await status_msg.edit_text(full_content)
                 chat_sessions[chat_id].append({"role": "assistant", "content": full_content})
                 save_chat_session(chat_id)
+                # ─── Skill Loop: synthesize a skill from this conversation ───
+                # Collect tool call trace for skill synthesis
+                _tool_trace = [
+                    {"name": m.get("name", ""), "result": m.get("content", "")}
+                    for m in chat_sessions.get(str(chat_id), [])
+                    if m.get("role") == "tool"
+                ]
+                skill_loop.check_and_synthesize_background(user_text, _tool_trace, full_content)
                 return
             except Exception as e:
                 logging.warning(f"Editor streaming failed for {model}: {e}")
@@ -1246,6 +1288,12 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await status_msg.edit_text(draft_content)
             chat_sessions[chat_id].append({"role": "assistant", "content": draft_content})
             save_chat_session(chat_id)
+            _tool_trace = [
+                {"name": m.get("name", ""), "result": m.get("content", "")}
+                for m in chat_sessions.get(str(chat_id), [])
+                if m.get("role") == "tool"
+            ]
+            skill_loop.check_and_synthesize_background(user_text, _tool_trace, draft_content)
             return
             
     except Exception as e:
@@ -1556,12 +1604,14 @@ def main():
 
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    application.add_handler(CommandHandler("start",   cmd_start))
-    application.add_handler(CommandHandler("next",    cmd_start))
-    application.add_handler(CommandHandler("stats",   cmd_stats))
-    application.add_handler(CommandHandler("pending", cmd_pending))
-    application.add_handler(CommandHandler("find",    cmd_find))
-    application.add_handler(CommandHandler("help",    cmd_help))
+    application.add_handler(CommandHandler("start",           cmd_start))
+    application.add_handler(CommandHandler("next",            cmd_start))
+    application.add_handler(CommandHandler("stats",           cmd_stats))
+    application.add_handler(CommandHandler("pending",         cmd_pending))
+    application.add_handler(CommandHandler("find",            cmd_find))
+    application.add_handler(CommandHandler("help",            cmd_help))
+    application.add_handler(CommandHandler("skills",          cmd_skills))
+    application.add_handler(CommandHandler("test_heartbeat",  cmd_test_heartbeat))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_chat))
     application.add_handler(MessageHandler(filters.Document.PDF, handle_document))
@@ -1571,10 +1621,12 @@ def main():
     # Set the simplified command menu
     from telegram import BotCommand
     commands = [
-        BotCommand("start", "Draft next outreach email"),
-        BotCommand("stats", "Show progress summary"),
-        BotCommand("pending", "List next 10 pending contacts"),
-        BotCommand("find", "Search research topics/profs")
+        BotCommand("start",          "Draft next outreach email"),
+        BotCommand("stats",          "Show progress summary"),
+        BotCommand("pending",        "List next 10 pending contacts"),
+        BotCommand("find",           "Search research topics/profs"),
+        BotCommand("skills",         "View Aurora's learned skills"),
+        BotCommand("test_heartbeat", "Trigger a manual heartbeat check")
     ]
     
     async def post_init(application):
@@ -1590,6 +1642,11 @@ def main():
     scheduler.add_job(auto_sync_inbox, 'interval', hours=6)
     # 2. Daily morning briefing at 8:00 AM server time
     scheduler.add_job(daily_morning_briefing, 'cron', hour=8, minute=0)
+    # 3. Proactive Heartbeat every 6 hours (OpenClaw-style intelligence)
+    #    Runs at 00:00, 06:00, 12:00, 18:00 server time
+    #    Stays SILENT unless it finds something actionable — no spam.
+    scheduler.add_job(heartbeat.run_heartbeat, 'cron', hour='0,6,12,18', minute=0)
+    logging.info("[Aurora] ✅ Heartbeat registered: runs at 00:00, 06:00, 12:00, 18:00")
     
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
