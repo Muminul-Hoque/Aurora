@@ -304,7 +304,25 @@ def run_heartbeat():
         logging.info("[Heartbeat] Nothing actionable this tick. Staying silent. ✅")
         return
 
-    logging.info(f"[Heartbeat] {len(all_alerts)} alert(s) found. Composing message...")
+    # ─── Anti-Spam Check: Only alert if the state has changed ───
+    import hashlib
+    alerts_hash = hashlib.md5(str(all_alerts).encode()).hexdigest()
+    try:
+        last_hash = ""
+        if os.path.exists("last_heartbeat_hash.txt"):
+            with open("last_heartbeat_hash.txt", "r") as f:
+                last_hash = f.read().strip()
+                
+        if alerts_hash == last_hash:
+            logging.info("[Heartbeat] Alerts found, but they are identical to the last notification. Staying silent to avoid spam. ✅")
+            return
+            
+        with open("last_heartbeat_hash.txt", "w") as f:
+            f.write(alerts_hash)
+    except Exception as e:
+        logging.warning(f"[Heartbeat] Anti-spam hash check failed: {e}")
+
+    logging.info(f"[Heartbeat] {len(all_alerts)} NEW alert(s) found. Composing message...")
 
     # Compose message (one lightweight API call if OpenRouter available)
     message = compose_heartbeat_message(all_alerts)
