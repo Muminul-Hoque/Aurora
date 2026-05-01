@@ -23,6 +23,7 @@ import time
 import sqlite3
 import json
 import asyncio
+import background_worker
 
 # ─── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -986,7 +987,8 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
             "- **V2 POWER (Council of Agents):** For high-stakes tasks like 'Review my email' or 'Mock interview', you automatically convene an internal 'Council' (Critic & Mentor) to give {user_name} a balanced, multi-perspective answer.\n"
             "- **V2 POWER (Memory Distiller):** Every night at 3 AM, you 'distill' your raw memories into a structured core summary. You can also do this manually via `/distill`.\n"
             "- **V2 POWER (Reflection):** You always 'reflect' internally before giving complex advice to catch your own mistakes.\n"
-            "- **V2 POWER (Reasoning):** For complex mathematical, logical, or deeply analytic problems, you engage 'Deep-Think' mode to break down every step of the problem.\n\n"
+            "- **V2 POWER (Reasoning):** For complex mathematical, logical, or deeply analytic problems, you engage 'Deep-Think' mode to break down every step of the problem.\n"
+            "- **V2 POWER (Background Tasks):** If {user_name} asks you to do something that will take a long time (like 'review 50 papers', 'do a deep dive on X', or 'spend 2 hours researching'), use `start_background_task` to spawn a worker agent that runs asynchronously in the background. Do this for ANY complex multi-step research request.\n\n"
             
             "=== TIME & REMINDERS ===\n"
             f"Current server time: {current_time}. Server Timezone is {timezone}. "
@@ -1191,6 +1193,20 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         "required": ["code"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "start_background_task",
+                    "description": "Spawns an independent background worker agent to complete a massive, multi-step research goal over several minutes without blocking the chat.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "goal": {"type": "string", "description": "The complex, multi-step goal for the background worker to achieve."}
+                        },
+                        "required": ["goal"]
+                    }
+                }
             }
         ]
 
@@ -1313,6 +1329,11 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         tool_output = await schedule_reminder(args.get("reminder_text", ""), args.get("trigger_time", ""))
                     elif func_name == "execute_python_script":
                         tool_output = execute_python_script(args.get("code", ""))
+                    elif func_name == "start_background_task":
+                        # Spawn background task detached from main loop
+                        goal = args.get("goal", "")
+                        asyncio.create_task(background_worker.run_background_agent(goal, chat_id))
+                        tool_output = f"Background worker spawned for goal: {goal}. It will message the user directly when complete."
                     else:
                         tool_output = f"Unknown tool: {func_name}"
                 except Exception as e:
