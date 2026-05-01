@@ -1759,8 +1759,8 @@ def main():
     print("Commands: /start /next /stats /pending /find <topic> /help")
     
     # Schedule background tasks
-    # 1. Sync Inbox every 6 hours
-    scheduler.add_job(auto_sync_inbox, 'interval', hours=6)
+    # 1. Sync Inbox every 1 hour
+    scheduler.add_job(auto_sync_inbox, 'interval', hours=1)
     # 2. Daily morning briefing at 8:00 AM server time
     scheduler.add_job(daily_morning_briefing, 'cron', hour=8, minute=0)
     # 3. Proactive Heartbeat every 5 minutes (Turbo-charged intelligence)
