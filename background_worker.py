@@ -155,7 +155,11 @@ async def run_background_agent(goal: str, chat_id: str):
     system_prompt = (
         "You are an autonomous background research agent. Your job is to completely resolve the user's complex goal.\n"
         "You must break the problem down, search for information, read pages, and synthesize the results.\n"
-        "Think step-by-step. Use tools repeatedly until you are confident you have the full answer.\n"
+        "Think step-by-step. Use tools repeatedly until you are confident you have the full answer.\n\n"
+        "CRITICAL ACADEMIC ANTI-HALLUCINATION RULES:\n"
+        "1. You MUST NOT cite or summarize any paper, book, or article unless you have successfully retrieved its details via your search tools.\n"
+        "2. Every cited paper MUST include a real, working URL (e.g., arxiv.org/abs/... or a direct link from your search results).\n"
+        "3. If you cannot find enough real papers to satisfy the user's request, report EXACTLY what you found and state that you could not find more. DO NOT invent fake papers to meet a quota.\n\n"
         "When you are finished, you MUST call `finish_task` with your final, comprehensive report."
     )
 
