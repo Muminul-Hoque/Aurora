@@ -38,19 +38,32 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 USER_NAME = os.getenv("USER_NAME", "Muhammed")
 AGENT_NAME = os.getenv("AGENT_NAME", "Aurora")
 
+import time
+
 # Agent Model Assignment (all free, light-to-heavy)
 CRITIC_MODELS = [
     "google/gemma-3-27b-it:free",
     "meta-llama/llama-3.3-70b-instruct:free",
+    "qwen/qwen3-coder:free",
+    "nousresearch/hermes-3-llama-3.1-405b:free",
+    "openai/gpt-oss-120b:free",
+    "nvidia/nemotron-3-super-120b-a12b:free"
 ]
 MENTOR_MODELS = [
     "google/gemma-3-27b-it:free",
     "meta-llama/llama-3.3-70b-instruct:free",
+    "qwen/qwen3-coder:free",
+    "nousresearch/hermes-3-llama-3.1-405b:free",
+    "openai/gpt-oss-120b:free",
+    "nvidia/nemotron-3-super-120b-a12b:free"
 ]
 SYNTHESIZER_MODELS = [
     "nousresearch/hermes-3-llama-3.1-405b:free",
     "meta-llama/llama-3.3-70b-instruct:free",
     "google/gemma-3-27b-it:free",
+    "qwen/qwen3-coder:free",
+    "openai/gpt-oss-120b:free",
+    "nvidia/nemotron-3-super-120b-a12b:free"
 ]
 
 # ─── Detect Council-Worthy Tasks ──────────────────────────────────────────────
@@ -116,6 +129,7 @@ Be specific. No vague feedback. Max 250 words."""
             return resp.choices[0].message.content.strip()
         except Exception as e:
             logging.warning(f"[Council/Critic] {model} failed: {e}")
+            time.sleep(2)
     return "Critic could not generate a response."
 
 
@@ -168,6 +182,7 @@ Be encouraging but concrete. Max 300 words."""
             return resp.choices[0].message.content.strip()
         except Exception as e:
             logging.warning(f"[Council/Mentor] {model} failed: {e}")
+            time.sleep(2)
     return "Mentor could not generate a response."
 
 
@@ -208,6 +223,7 @@ Banned words: Delve, Crucial, Tapestry, Furthermore, In conclusion."""
             return resp.choices[0].message.content.strip()
         except Exception as e:
             logging.warning(f"[Council/Synthesizer] {model} failed: {e}")
+            time.sleep(2)
 
     # Fallback: just show both
     return f"🔍 **The Critic found:**\n{critic_output[:400]}\n\n💡 **The Mentor suggests:**\n{mentor_output[:400]}"
@@ -243,6 +259,9 @@ def run_council(task: str, context: str = "") -> str:
 REFLECTION_MODELS = [
     "google/gemma-3-12b-it:free",
     "google/gemma-3-27b-it:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "qwen/qwen3-coder:free",
+    "nousresearch/hermes-3-llama-3.1-405b:free",
 ]
 
 REFLECTION_TRIGGERS = [
@@ -297,5 +316,6 @@ Be BRIEF — one sentence max. This is Aurora's internal thought, not the user's
                 return None  # No improvement needed — silence
             return result
         except Exception as e:
-            logging.warning(f"[Reflection] {model} failed: {e}")
+            logging.warning(f"[Council/Reflection] {model} failed: {e}")
+            time.sleep(2)
     return None

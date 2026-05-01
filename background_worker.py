@@ -214,7 +214,17 @@ async def run_background_agent(goal: str, chat_id: str):
             # Process tool calls
             for tool_call in msg.tool_calls:
                 func_name = tool_call.function.name
-                args = json.loads(tool_call.function.arguments)
+                try:
+                    args = json.loads(tool_call.function.arguments)
+                except json.JSONDecodeError as json_err:
+                    logging.warning(f"[Worker] JSON decode error: {json_err} for tool {func_name}")
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": func_name,
+                        "content": f"Error: Invalid JSON arguments. {str(json_err)}. Please ensure your arguments are valid JSON without markdown formatting."
+                    })
+                    continue
                 tool_output = ""
                 
                 if func_name == "finish_task":
