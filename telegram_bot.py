@@ -1198,6 +1198,7 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
             return
 
         # First pass: use ENGINEER (Qwen) when tools are available for precision;
+        first_mode = 'tool' if tools else 'chat'
         completion = call_llm(chat_sessions[chat_id], tools=tools, mode=first_mode)
         
         response_msg = completion.choices[0].message
