@@ -19,8 +19,13 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# Use a fast reasoning model or a strong instruction model for the worker
-WORKER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+# Use a fallback list of strong instruction models to handle 429 rate limits
+WORKER_MODELS = [
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "google/gemma-3-27b-it:free",
+    "nousresearch/hermes-3-llama-3.1-405b:free",
+    "qwen/qwen3-coder:free"
+]
 
 # ─── Stateless Research Tools ──────────────────────────────────────────────────
 
@@ -162,14 +167,26 @@ async def run_background_agent(goal: str, chat_id: str):
     max_steps = 15
     for step in range(max_steps):
         try:
-            # We run the synchronous OpenRouter call in a thread to not block the event loop
-            response = await asyncio.to_thread(
-                client.chat.completions.create,
-                model=WORKER_MODEL,
-                messages=messages,
-                tools=WORKER_TOOLS,
-                temperature=0.5
-            )
+            response = None
+            last_err = None
+            for model in WORKER_MODELS:
+                try:
+                    # We run the synchronous OpenRouter call in a thread to not block the event loop
+                    response = await asyncio.to_thread(
+                        client.chat.completions.create,
+                        model=model,
+                        messages=messages,
+                        tools=WORKER_TOOLS,
+                        temperature=0.5
+                    )
+                    break  # Success
+                except Exception as e:
+                    logging.warning(f"[Worker] Model {model} failed: {e}")
+                    last_err = e
+                    continue
+                    
+            if not response:
+                raise Exception(f"All models failed due to rate limits. Last error: {last_err}")
             
             msg = response.choices[0].message
             
