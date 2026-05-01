@@ -1,15 +1,15 @@
 <div align="center">
 
 # 🌌 Aurora
-**Autonomous Academic Research Agent for Low-Resource Servers**
+**Autonomous Academic Research Framework for Low-Resource Servers**
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![RAM: 1GB Optimized](https://img.shields.io/badge/RAM-1GB_Optimized-success.svg)](https://github.com/Muminul-Hoque/Aurora/blob/main/create_swap.sh)
-[![AI: Multi-Model](https://img.shields.io/badge/AI-Multi--Model-9cf.svg)](#-multi-model-routing)
+[![Architecture: Agentic](https://img.shields.io/badge/Architecture-Agentic-9cf.svg)](#-agentic-architecture)
 [![Interface: Telegram](https://img.shields.io/badge/Interface-Telegram-2CA5E0.svg)](#-telegram-commands)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](#-license)
 
-*A proactive AI partner for academic research, professor outreach, deadline tracking, and daily life — running 24/7 on a cheap cloud VM.*
+*An autonomous AI framework combining AutoGPT-style background workers, OpenClaw persistence, and Hermes self-learning—designed specifically for PhD students and researchers running on cheap cloud VMs.*
 
 </div>
 
@@ -17,23 +17,31 @@
 
 ## ⚡ Why Aurora?
 
-Traditional AI assistants require expensive subscriptions or heavy local hardware. Aurora is built for PhD students, researchers, and anyone who wants a powerful, always-on AI companion running on **cheap, low-resource cloud instances** (tested on a 1GB RAM Azure VM).
+Traditional AI assistants require expensive subscriptions or heavy local hardware. Aurora is built for researchers who want a powerful, always-on AI companion running on **low-resource cloud instances** (tested on a 1GB RAM Azure VM).
 
-By routing all inference to API-based LLMs via OpenRouter and Gemini, Aurora consumes almost zero local RAM — no GPU, no heavy model downloads.
+By routing all inference to API-based LLMs via OpenRouter and Gemini, Aurora consumes almost zero local RAM while delivering state-of-the-art autonomous capabilities.
 
 ---
 
-## ✨ Features
+## 🤖 Agentic Architecture
+
+Aurora is not a simple chatbot; she is a complete **Agentic Framework** utilizing patterns from the most advanced open-source AI projects:
+
+*   **AutoGPT Background Workers:** Delegate massive, multi-step tasks (e.g., "Research 50 papers on X"). Aurora spawns an independent, non-blocking asynchronous worker thread to complete the task over several minutes.
+*   **Hermes-Style Skill Engine:** Aurora learns from her mistakes. If a tool call fails, she analyzes the failure and writes a permanent Markdown "skill" to her local directory so she never makes the same mistake twice.
+*   **Nightly Memory Distillation:** To solve LLM amnesia, Aurora runs a 3 AM scheduled job that compresses raw daily chat logs into a persistent, structured "Truth Summary."
+*   **Council of Agents:** For high-stakes queries (e.g., reviewing an academic email), Aurora spawns a **Critic** and a **Mentor** to debate internally before presenting you with a synthesized response.
+*   **OpenClaw Proactive Heartbeat:** A lightweight script runs every 5 minutes scanning your upcoming deadlines, habits, and outreach pace. She will proactively message you if (and only if) action is required.
+*   **Command Sandboxing:** Aurora can execute real bash commands on your server, protected by a strict Regex-based Safety Filter that blocks dangerous patterns (`rm -rf`, `DROP TABLE`) without a master passphrase.
+
+---
+
+## ✨ Core Capabilities
 
 | Feature | Description |
 | :--- | :--- |
 | **🧠 Multi-Model Routing** | Routes tasks to the best-fit free LLM via OpenRouter. 5 specialized model groups: Architect, Engineer, Scout, Scholar, Sprinter. |
-| **⚙️ AutoGPT Background Tasks** | Spawn an independent `background_worker.py` to execute massive, multi-step research goals (max 15 iterations) without blocking chat. |
-| **🧬 Council of Agents** | For high-stakes tasks (mock interviews, email review), Aurora spawns a **Critic** and **Mentor** to debate and synthesize the perfect response. |
-| **🫀 Proactive Heartbeat** | Runs every 5 minutes (`heartbeat.py`) to scan deadlines, outreach pace, and habits. Only alerts you if actionable (with state-hashing anti-spam). |
-| **🌙 Memory Distillation** | Every night at 3 AM (`memory_distiller.py`), Aurora compresses your daily chats into a permanent 'Truth Summary' to maintain a unified profile. |
-| **📘 Skill Engine** | Analyzes multi-step tool failures and synthesizes reusable Markdown "skills" (`skill_loop.py`) to permanently fix future behavior. |
-| **🛡️ Sandbox Safety Filter** | Advanced security gate (`safety_filter.py`) that classifies bash commands as SAFE, WARN, or DANGEROUS before execution. |
+| **⚙️ Self-Scripting** | If a task requires complex data processing or math, Aurora can write and execute her own Python scripts on the fly. |
 | **👁️ Vision & Images** | Send a screenshot, graph, or photo via Telegram — Gemini Flash analyzes it instantly. |
 | **📅 Deadline Tracking** | Tracks deadlines with proactive warnings. Connects to local JSON, **Notion**, or **Google Calendar**. |
 | **🔍 Deep Research** | Searches DuckDuckGo, scrapes full webpages via Jina Reader, and queries the **ArXiv API** for academic papers. |
@@ -43,26 +51,17 @@ By routing all inference to API-based LLMs via OpenRouter and Gemini, Aurora con
 
 ---
 
-## 🤖 The "Agentic" Architecture (Aurora v2)
-
-Aurora recently underwent a massive upgrade, integrating state-of-the-art patterns from **OpenClaw** and **Hermes**:
-*   **The "Devin/AutoGPT" Capability:** The ability to write her own Python scripts (`execute_python_script`) and run them in long-running background loops.
-*   **The "OpenClaw" Capability:** A relentless, lightweight 5-minute heartbeat that keeps her proactive instead of reactive.
-*   **The "Hermes" Capability:** Nightly memory consolidation and automated skill generation to cure LLM amnesia.
-
----
-
 ## 🧠 Multi-Model Routing
 
-Aurora uses 5 task-specific model groups, each with automatic fallback:
+Aurora uses task-specific model groups, each with automatic failover to prevent rate-limit crashes:
 
 | Group | Best For | Primary Model |
 |---|---|---|
-| **Architect** | Email drafting, reasoning, Aurora's persona | Hermes 3 405B |
+| **Architect** | Email drafting, reasoning, persona | Hermes 3 405B |
 | **Engineer** | Tool calls, JSON tasks, server commands | Qwen3 Coder |
 | **Scout** | Professor discovery, broad world knowledge | GPT-OSS 120B |
 | **Scholar** | Paper summaries, research interest extraction | Nemotron 120B |
-| **Sprinter** | Fast single-turn tasks, sentiment, status | Gemma 3 12B |
+| **Sprinter** | Fast single-turn tasks, sentiment, status | Gemma 3 27B |
 
 All models are **free-tier via OpenRouter** — no paid API required for core functionality.
 
@@ -111,9 +110,10 @@ bash create_swap.sh
 | `/pending` | List the next 10 professors in the outreach queue |
 | `/find <topic>` | Discover professors by research area |
 | `/schedule_reminder <time> <message>` | Set a custom reminder |
+| `/distill` | Force a manual memory consolidation |
 | `/help` | Show all available commands |
 
-You can also chat naturally — ask Aurora to summarize a paper, search the web, analyze an image, check your RAM, or log an expense.
+You can also chat naturally — ask Aurora to run a background task, summarize an ArXiv paper, analyze an image, or check your RAM.
 
 ---
 
@@ -128,9 +128,8 @@ Set these in your `.env` file (generated by the setup wizard):
 | `OPENROUTER_API_KEY` | For multi-model LLM routing (free tier available) |
 | `GEMINI_API_KEY` | For vision, image analysis, and semantic memory embeddings |
 | `AGENT_NAME` / `USER_NAME` | Customize Aurora's name and what she calls you |
+| `AURORA_SAFETY_PASSPHRASE` | Master password to override the Bash Safety Filter |
 | `DEADLINE_TRACKER_TYPE` | `json` (local), `notion`, or `google_calendar` |
-| `USER_TIMEZONE` | e.g., `UTC`, `Asia/Dhaka`, `America/New_York` |
-| `NOTION_API_KEY` + `NOTION_DATABASE_ID` | Required if using Notion deadline tracking |
 
 ---
 
@@ -170,10 +169,6 @@ apscheduler                 # Proactive scheduling
 duckduckgo-search           # Web search
 beautifulsoup4              # Web scraping
 httpx                       # Async HTTP (Jina Reader, ArXiv API)
-notion-client               # Notion deadline backend
-google-api-python-client    # Google Calendar backend
-Pillow                      # Image processing
-python-dotenv
 ```
 
 ---
@@ -196,9 +191,6 @@ This project is licensed under the **GNU AGPL v3** License.
 
 You are free to use, modify, and distribute this software for personal, academic, and open-source projects. However, if you use this code in a commercial product or service, you **must** open-source your entire project under the same AGPL v3 license.
 
-**Commercial Licensing:** 
-If you wish to use Aurora commercially without open-sourcing your proprietary code, a separate commercial license is required. Contact: **muminul951@gmail.com**
-
 ## 🤝 Contributing
 
 Contributions are what make the open source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
@@ -216,23 +208,6 @@ Contributions are what make the open source community such an amazing place to l
 If you found this repository helpful, please consider **starring** it! It helps others find the project and motivates further development. 
 
 [![Star on GitHub](https://img.shields.io/github/stars/Muminul-Hoque/Aurora?style=social)](https://github.com/Muminul-Hoque/Aurora/stargazers)
-
----
-
-## 📚 Citation
-
-If you use Aurora in your academic research or publication, please cite it:
-
-```bibtex
-@software{hoque2026aurora,
-  author = {Hoque, Muhammed Muminul},
-  title = {Aurora: Autonomous Academic Research Agent for Low-Resource Servers},
-  year = {2026},
-  publisher = {GitHub},
-  journal = {GitHub repository},
-  howpublished = {\url{https://github.com/Muminul-Hoque/Aurora}}
-}
-```
 
 ---
 
