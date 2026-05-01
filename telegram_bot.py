@@ -406,12 +406,15 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not auth(update):
         return
 
-    msg  = "🤖 **Aurora Agent — Core Commands**\n\n"
+    msg  = "🤖 **Aurora Agent v2 — Core Commands**\n\n"
     msg += "📨 `/start` — Draft the next email\n"
     msg += "📊 `/stats` — Outreach progress summary\n"
     msg += "⏳ `/pending` — List next 10 contacts\n"
-    msg += "🔍 `/find <topic>` — Search research topics\n\n"
-    msg += "💡 *Tip:* Send me an image to analyze it with Vision, or a PDF to read its contents."
+    msg += "🔍 `/find <topic>` — Search research topics\n"
+    msg += "🧠 `/skills` — View all learned intelligence\n"
+    msg += "🌙 `/distill` — Manually trigger memory reflection\n"
+    msg += "🫀 `/test_heartbeat` — Check for urgent actions\n\n"
+    msg += "💡 **V2 Powers:** You can ask me to *'Convene the Council'* for interview prep, or I'll automatically *'Reflect'* before giving you complex advice. Send me a PDF or Image to analyze them!"
 
     await update.message.reply_text(msg, parse_mode='Markdown')
 
@@ -952,8 +955,11 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
             "=== YOUR CAPABILITIES ===\n"
             "- You have INTERNET ACCESS: use `search_web` for current info, `fetch_webpage` to read links, `async_fetch_multiple_webpages` for speed, and `search_arxiv` for research papers.\n"
             f"- You can SET REMINDERS using `schedule_reminder` — always use this when {user_name} asks to be reminded of something.\n"
-            f"- You can RUN SERVER COMMANDS using `run_server_command`. **If {user_name} asks about your RAM, Disk, or Processes, use this tool (e.g. 'free -h', 'df -h', 'top -b -n 1') to give them a real answer.** Don't claim you can't see the system; you are the system! 💻\n"
-            "- You SAVE IMPORTANT THINGS using memory tools: `store_semantic_memory` (for facts), `log_expense` (for money), and `manage_profile` (for roles/goals). Do this whenever they share something important. Your live memory only holds 10 messages, so save what matters.\n\n"
+            f"- You can RUN SERVER COMMANDS using `run_server_command`. You have a **Safety Filter** that blocks dangerous commands.\n"
+            "- You SAVE IMPORTANT THINGS using memory tools: `store_semantic_memory` and `manage_profile`. \n"
+            "- **V2 POWER (Council of Agents):** For high-stakes tasks like 'Review my email' or 'Mock interview', you automatically convene an internal 'Council' (Critic & Mentor) to give {user_name} a balanced, multi-perspective answer.\n"
+            "- **V2 POWER (Memory Distiller):** Every night at 3 AM, you 'distill' your raw memories into a structured core summary. You can also do this manually via `/distill`.\n"
+            "- **V2 POWER (Reflection):** You always 'reflect' internally before giving complex advice to catch your own mistakes.\n\n"
             
             "=== TIME & REMINDERS ===\n"
             f"Current server time: {current_time}. Server Timezone is {timezone}. "
