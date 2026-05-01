@@ -13,6 +13,9 @@ import email_sender
 import sync_gmail
 import skill_loop
 import heartbeat
+import memory_distiller
+import council
+import safety_filter
 import httpx
 import google.generativeai as genai
 from PIL import Image
@@ -438,6 +441,18 @@ async def cmd_test_heartbeat(update: Update, context: ContextTypes.DEFAULT_TYPE)
     result = heartbeat.run_test_heartbeat()
     if len(result) > 3800:
         result = result[:3800] + "\n\n…_(truncated)_"
+    await update.message.reply_text(result, parse_mode='Markdown')
+
+
+async def cmd_distill(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /distill — Manually trigger the nightly memory consolidation job.
+    (Hermes-style memory distillation)
+    """
+    if not auth(update):
+        return
+    await update.message.reply_text("🌙 Consolidation in progress... I'm reflecting on our recent talks.")
+    result = memory_distiller.run_manual_distillation()
     await update.message.reply_text(result, parse_mode='Markdown')
 
 
@@ -887,6 +902,10 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
         relevant_skill = skill_loop.find_relevant_skill(user_text)
         skill_injection = relevant_skill if relevant_skill else ""
 
+        # ─── Reflection Loop: pre-response self-critique ───────────────────
+        reflection_note = council.run_reflection(user_text)
+        reflection_injection = f"\n\n[INTERNAL REFLECTION: {reflection_note}]" if reflection_note else ""
+
         # Fetch real live server stats so Aurora never hallucinates specs
         import subprocess
         def _run(cmd): 
@@ -945,6 +964,7 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
             "===========================================\n"
             "Read this memory before every reply. Reference it naturally. This is what makes you feel real."
             f"{skill_injection}"
+            f"{reflection_injection}"
         )
 
         # Initialize or update system prompt in chat history
@@ -1168,9 +1188,16 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     continue
             raise Exception(f"All models failed (mode={mode}). Last error: {last_err}")
 
+        # ─── Council of Agents: trigger for high-stakes tasks ─────────────
+        if council.should_invoke_council(user_text):
+            status_msg = await update.message.reply_text("🧬 Convening the Council of Agents (Critic & Mentor)...")
+            council_response = council.run_council(user_text, context=core_memory)
+            await status_msg.edit_text(council_response, parse_mode='Markdown')
+            chat_sessions[chat_id].append({"role": "assistant", "content": council_response})
+            save_chat_session(chat_id)
+            return
+
         # First pass: use ENGINEER (Qwen) when tools are available for precision;
-        # use ARCHITECT (Hermes 405B) for pure conversation.
-        first_mode = 'tool' if tools else 'chat'
         completion = call_llm(chat_sessions[chat_id], tools=tools, mode=first_mode)
         
         response_msg = completion.choices[0].message
@@ -1195,7 +1222,18 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 
                 try:
                     if func_name == "run_server_command":
-                        tool_output = run_server_command(args.get("command", ""))
+                        cmd_to_run = args.get("command", "")
+                        # ─── Safety Filter: check for dangerous commands ──────
+                        safety = safety_filter.check_command(cmd_to_run, user_text)
+                        
+                        if safety["action"] == "block":
+                            tool_output = safety["message"]
+                        elif safety["action"] == "warn":
+                            # Send the warning and wait for button click (async is hard here, so we warn in chat)
+                            await update.message.reply_text(safety["message"], reply_markup=InlineKeyboardMarkup(safety["keyboard"]["inline_keyboard"]), parse_mode='Markdown')
+                            tool_output = "COMMAND_PENDING_USER_APPROVAL: I have asked the user for permission to run this risky command."
+                        else:
+                            tool_output = run_server_command(cmd_to_run)
                     elif func_name == "manage_profile":
                         tool_output = manage_profile(args.get("key", ""), args.get("value", ""))
                     elif func_name == "log_expense":
@@ -1612,6 +1650,7 @@ def main():
     application.add_handler(CommandHandler("help",            cmd_help))
     application.add_handler(CommandHandler("skills",          cmd_skills))
     application.add_handler(CommandHandler("test_heartbeat",  cmd_test_heartbeat))
+    application.add_handler(CommandHandler("distill",         cmd_distill))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_chat))
     application.add_handler(MessageHandler(filters.Document.PDF, handle_document))
@@ -1626,7 +1665,8 @@ def main():
         BotCommand("pending",        "List next 10 pending contacts"),
         BotCommand("find",           "Search research topics/profs"),
         BotCommand("skills",         "View Aurora's learned skills"),
-        BotCommand("test_heartbeat", "Trigger a manual heartbeat check")
+        BotCommand("test_heartbeat", "Trigger a manual heartbeat check"),
+        BotCommand("distill",        "Manually run memory consolidation")
     ]
     
     async def post_init(application):
@@ -1646,7 +1686,11 @@ def main():
     #    Runs at 00:00, 06:00, 12:00, 18:00 server time
     #    Stays SILENT unless it finds something actionable — no spam.
     scheduler.add_job(heartbeat.run_heartbeat, 'cron', hour='0,6,12,18', minute=0)
-    logging.info("[Aurora] ✅ Heartbeat registered: runs at 00:00, 06:00, 12:00, 18:00")
+    
+    # 4. Nightly Memory Distillation at 3:00 AM (Hermes-style sleep)
+    scheduler.add_job(memory_distiller.run_nightly_distillation, 'cron', hour=3, minute=0)
+    
+    logging.info("[Aurora] ✅ Heartbeat and Distiller registered.")
     
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
