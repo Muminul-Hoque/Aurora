@@ -138,6 +138,13 @@ SPRINTER_MODELS = [
     "meta-llama/llama-3.3-70b-instruct:free",
 ]
 
+# Reasoning: Long-thinking models for ultra-complex academic analysis
+REASONING_MODELS = [
+    "deepseek/deepseek-r1:free",
+    "deepseek/deepseek-r1-distill-llama-70b:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+]
+
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 def is_pending(status: str) -> bool:
@@ -708,25 +715,41 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
             except Exception as e:
                 logging.error(f"Failed to send reminder: {e}")
 
-        def schedule_reminder(reminder_text: str, trigger_time: str) -> str:
-            """Schedules a reminder using APScheduler. trigger_time must be 'YYYY-MM-DD HH:MM:SS'."""
+        async def schedule_reminder(text: str, trigger_time: str) -> str:
+            """Schedules a Telegram reminder for the user."""
             try:
                 from datetime import datetime
-                target_dt = datetime.strptime(trigger_time, "%Y-%m-%d %H:%M:%S")
-                if target_dt <= datetime.now():
+                trigger_dt = datetime.strptime(trigger_time, "%Y-%m-%d %H:%M:%S")
+                if trigger_dt <= datetime.now():
                     return "Error: Trigger time must be in the future."
                 
                 scheduler.add_job(
-                    send_telegram_reminder,
+                    lambda: context.bot.send_message(chat_id=chat_id, text=f"🔔 **REMINDER:** {text}"),
                     'date',
-                    run_date=target_dt,
-                    args=[reminder_text]
+                    run_date=trigger_dt
                 )
-                return f"Success: Reminder scheduled for {trigger_time} (server time)."
-            except ValueError:
-                return "Error: trigger_time must be exactly in 'YYYY-MM-DD HH:MM:SS' format."
+                return f"✅ Reminder scheduled for {trigger_time}: {text}"
             except Exception as e:
-                return f"Error scheduling reminder: {e}"
+                return f"❌ Scheduling error: {e}"
+
+        def execute_python_script(code: str) -> str:
+            """
+            Autonomous Tool Writing: Writes code to a temp file, 
+            executes it in a subprocess, and returns output.
+            """
+            import tempfile
+            import subprocess
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".py", mode="w", encoding="utf-8") as tmp:
+                    tmp.write(code)
+                    tmp_name = tmp.name
+                
+                result = subprocess.check_output(f"python3 {tmp_name}", shell=True, text=True, stderr=subprocess.STDOUT, timeout=10)
+                os.remove(tmp_name)
+                return f"✅ Execution Success:\n```\n{result}\n```"
+            except Exception as e:
+                if 'tmp_name' in locals(): os.remove(tmp_name)
+                return f"❌ Execution Error:\n```\n{str(e)}\n```"
 
         def get_calendar_service():
             """Helper to authenticate and return Google Calendar service."""
@@ -905,8 +928,11 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
         relevant_skill = skill_loop.find_relevant_skill(user_text)
         skill_injection = relevant_skill if relevant_skill else ""
 
-        # ─── Reflection Loop: pre-response self-critique ───────────────────
-        reflection_note = council.run_reflection(user_text)
+        # ─── Reflection Loop: pre-response self-critique (run in thread to avoid blocking) ───
+        if council.should_reflect(user_text):
+            reflection_note = await asyncio.to_thread(council.run_reflection, user_text)
+        else:
+            reflection_note = None
         reflection_injection = f"\n\n[INTERNAL REFLECTION: {reflection_note}]" if reflection_note else ""
 
         # Fetch real live server stats so Aurora never hallucinates specs
@@ -956,10 +982,11 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
             "- You have INTERNET ACCESS: use `search_web` for current info, `fetch_webpage` to read links, `async_fetch_multiple_webpages` for speed, and `search_arxiv` for research papers.\n"
             f"- You can SET REMINDERS using `schedule_reminder` — always use this when {user_name} asks to be reminded of something.\n"
             f"- You can RUN SERVER COMMANDS using `run_server_command`. You have a **Safety Filter** that blocks dangerous commands.\n"
-            "- You SAVE IMPORTANT THINGS using memory tools: `store_semantic_memory` and `manage_profile`. \n"
+            "- **V2 POWER (Self-Scripting):** If a task requires complex data processing, math, or automation, use `execute_python_script` to write and run your own code.\n"
             "- **V2 POWER (Council of Agents):** For high-stakes tasks like 'Review my email' or 'Mock interview', you automatically convene an internal 'Council' (Critic & Mentor) to give {user_name} a balanced, multi-perspective answer.\n"
             "- **V2 POWER (Memory Distiller):** Every night at 3 AM, you 'distill' your raw memories into a structured core summary. You can also do this manually via `/distill`.\n"
-            "- **V2 POWER (Reflection):** You always 'reflect' internally before giving complex advice to catch your own mistakes.\n\n"
+            "- **V2 POWER (Reflection):** You always 'reflect' internally before giving complex advice to catch your own mistakes.\n"
+            "- **V2 POWER (Reasoning):** For complex mathematical, logical, or deeply analytic problems, you engage 'Deep-Think' mode to break down every step of the problem.\n\n"
             
             "=== TIME & REMINDERS ===\n"
             f"Current server time: {current_time}. Server Timezone is {timezone}. "
@@ -1150,6 +1177,20 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         "required": ["reminder_text", "trigger_time"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "execute_python_script",
+                    "description": "Writes and executes a Python script to solve complex data, math, or automation tasks.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "code": {"type": "string", "description": "The full Python code to execute."}
+                        },
+                        "required": ["code"]
+                    }
+                }
             }
         ]
 
@@ -1161,6 +1202,7 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
               mode='discovery' → SCOUT first (GPT-OSS 120B) — broad knowledge
               mode='scholar'   → SCHOLAR first (Nemotron 120B) — academic tasks
               mode='fast'      → SPRINTER first (Gemma 12B) — quick single-turn tasks
+              mode='reasoning' → DEEP-THINK (DeepSeek R1) — logic & math
             """
             if mode == 'tool':
                 model_list = ENGINEER_MODELS + ARCHITECT_MODELS
@@ -1170,6 +1212,8 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 model_list = SCHOLAR_MODELS + ARCHITECT_MODELS
             elif mode == 'fast':
                 model_list = SPRINTER_MODELS + ARCHITECT_MODELS
+            elif mode == 'reasoning':
+                model_list = REASONING_MODELS + ARCHITECT_MODELS
             else:  # 'chat' — default Aurora persona
                 model_list = ARCHITECT_MODELS + ENGINEER_MODELS
 
@@ -1197,7 +1241,7 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
         # ─── Council of Agents: trigger for high-stakes tasks ─────────────
         if council.should_invoke_council(user_text):
             status_msg = await update.message.reply_text("🧬 Convening the Council of Agents (Critic & Mentor)...")
-            council_response = council.run_council(user_text, context=core_memory)
+            council_response = await asyncio.to_thread(council.run_council, user_text, core_memory)
             await status_msg.edit_text(council_response, parse_mode='Markdown')
             chat_sessions[chat_id].append({"role": "assistant", "content": council_response})
             save_chat_session(chat_id)
@@ -1205,6 +1249,13 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
         # First pass: use ENGINEER (Qwen) when tools are available for precision;
         first_mode = 'tool' if tools else 'chat'
+        
+        # ─── Reasoning Trigger (only for pure chat, not tool calls) ─────────
+        # Use Deep-Think models for complex academic analysis or derivations
+        reasoning_triggers = ["think deep", "reason", "derive", "analyze deeply", "mathematical", "solve for"]
+        if first_mode == 'chat' and any(t in user_text.lower() for t in reasoning_triggers):
+            first_mode = 'reasoning'
+            
         completion = call_llm(chat_sessions[chat_id], tools=tools, mode=first_mode)
         
         response_msg = completion.choices[0].message
@@ -1236,10 +1287,9 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         if safety["action"] == "block":
                             tool_output = safety["message"]
                         elif safety["action"] == "warn":
-                            # Send the warning and wait for button click (async is hard here, so we warn in chat)
-                            await update.message.reply_text(safety["message"], reply_markup=InlineKeyboardMarkup(safety["keyboard"]["inline_keyboard"]), parse_mode='Markdown')
+                            await update.message.reply_text(safety["message"], reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], callback_data=b["callback_data"]) for b in row] for row in safety["keyboard"]["inline_keyboard"]]), parse_mode='Markdown')
                             tool_output = "COMMAND_PENDING_USER_APPROVAL: I have asked the user for permission to run this risky command."
-                        else:
+                        else:  # 'execute' — SAFE or DANGEROUS_OVERRIDE
                             tool_output = run_server_command(cmd_to_run)
                     elif func_name == "manage_profile":
                         tool_output = manage_profile(args.get("key", ""), args.get("value", ""))
@@ -1260,7 +1310,9 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     elif func_name == "manage_deadline":
                         tool_output = manage_deadline(args.get("action", ""), args.get("topic", ""), args.get("date", ""))
                     elif func_name == "schedule_reminder":
-                        tool_output = schedule_reminder(args.get("reminder_text", ""), args.get("trigger_time", ""))
+                        tool_output = await schedule_reminder(args.get("reminder_text", ""), args.get("trigger_time", ""))
+                    elif func_name == "execute_python_script":
+                        tool_output = execute_python_script(args.get("code", ""))
                     else:
                         tool_output = f"Unknown tool: {func_name}"
                 except Exception as e:
@@ -1490,8 +1542,9 @@ def daily_morning_briefing():
                 content = f.read().strip()
                 if content:
                     core_mem = content
-                
-        msg = f"🌅 **Good Morning, {user_name}! Here is your Daily Briefing:**\n\n"
+        
+        _user_name = os.getenv("USER_NAME", "Friend")  # FIX: was using undefined local variable
+        msg = f"🌅 **Good Morning, {_user_name}! Here is your Daily Briefing:**\n\n"
         msg += f"📊 **Outreach Progress:** {sent}/{total} ({pct}%)\n"
         msg += f"⏳ **Pending Emails:** {pending}\n\n"
         
@@ -1689,10 +1742,9 @@ def main():
     scheduler.add_job(auto_sync_inbox, 'interval', hours=6)
     # 2. Daily morning briefing at 8:00 AM server time
     scheduler.add_job(daily_morning_briefing, 'cron', hour=8, minute=0)
-    # 3. Proactive Heartbeat every 6 hours (OpenClaw-style intelligence)
-    #    Runs at 00:00, 06:00, 12:00, 18:00 server time
-    #    Stays SILENT unless it finds something actionable — no spam.
-    scheduler.add_job(heartbeat.run_heartbeat, 'cron', hour='0,6,12,18', minute=0)
+    # 3. Proactive Heartbeat every 5 minutes (Turbo-charged intelligence)
+    #    Stays SILENT unless it finds something actionable.
+    scheduler.add_job(heartbeat.run_heartbeat, 'interval', minutes=5)
     
     # 4. Nightly Memory Distillation at 3:00 AM (Hermes-style sleep)
     scheduler.add_job(memory_distiller.run_nightly_distillation, 'cron', hour=3, minute=0)
