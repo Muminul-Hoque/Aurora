@@ -983,6 +983,7 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
             "- You have INTERNET ACCESS: use `search_web` for current info, `fetch_webpage` to read links, `async_fetch_multiple_webpages` for speed, and `search_arxiv` for research papers.\n"
             f"- You can SET REMINDERS using `schedule_reminder` — always use this when {user_name} asks to be reminded of something.\n"
             f"- You can RUN SERVER COMMANDS using `run_server_command`. You have a **Safety Filter** that blocks dangerous commands.\n"
+            "- **GOOGLE CALENDAR ACCESS:** You are connected to the user's real Google Calendar via `manage_deadline`. ALWAYS call manage_deadline(action='list', topic='all') when the user asks about their schedule, upcoming events, deadlines, or what is happening this week or today. Never say you don't have calendar access — you DO.\n"
             "- **ADVANCED CAPABILITY (Self-Scripting):** If a task requires complex data processing, math, or automation, use `execute_python_script` to write and run your own code.\n"
             "- **ADVANCED CAPABILITY (Council of Agents):** For high-stakes tasks like 'Review my email' or 'Mock interview', you automatically convene an internal 'Council' (Critic & Mentor) to give {user_name} a balanced, multi-perspective answer.\n"
             "- **ADVANCED CAPABILITY (Memory Distiller):** Every night at 3 AM, you 'distill' your raw memories into a structured core summary. You can also do this manually via `/distill`.\n"
@@ -1025,7 +1026,7 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 "type": "function",
                 "function": {
                     "name": "manage_deadline",
-                    "description": "Adds, lists, or removes academic deadlines (e.g. for PhD applications).",
+                    "description": "Manages deadlines and calendar events. Connected to Google Calendar. Use action='list' ANY TIME the user asks about upcoming events, deadlines, interviews, or their schedule. Use action='add' to create a new event. Use action='remove' to delete one. ALWAYS call this tool when the user asks what is happening this week, today, or asks about any deadline.",
                     "parameters": {
                         "type": "object",
                         "properties": {
