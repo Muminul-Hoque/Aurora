@@ -758,23 +758,28 @@ async def process_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
             from google_auth_oauthlib.flow import InstalledAppFlow
             from google.auth.transport.requests import Request
             from googleapiclient.discovery import build
-            import pickle
+            import json
 
             scopes = ['https://www.googleapis.com/auth/calendar']
             creds = None
-            if os.path.exists('token.json'):
-                with open('token.json', 'rb') as token:
-                    creds = pickle.load(token)
+            token_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'token.json')
+            creds_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'credentials.json')
+
+            if os.path.exists(token_path):
+                try:
+                    creds = Credentials.from_authorized_user_file(token_path, scopes)
+                except Exception:
+                    creds = None
             if not creds or not creds.valid:
                 if creds and creds.expired and creds.refresh_token:
                     creds.refresh(Request())
                 else:
-                    if not os.path.exists('credentials.json'):
+                    if not os.path.exists(creds_path):
                         return None
-                    flow = InstalledAppFlow.from_client_secrets_file('credentials.json', scopes)
+                    flow = InstalledAppFlow.from_client_secrets_file(creds_path, scopes)
                     creds = flow.run_local_server(port=0)
-                with open('token.json', 'wb') as token:
-                    pickle.dump(creds, token)
+                with open(token_path, 'w') as token:
+                    token.write(creds.to_json())
             return build('calendar', 'v3', credentials=creds)
 
         def manage_deadline(action: str, topic: str, date: str = None) -> str:
